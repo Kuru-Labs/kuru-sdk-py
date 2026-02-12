@@ -1,0 +1,75 @@
+name: Version Bump & Publish to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+        with:
+          enable-cache: true
+
+      - name: Bump version
+        id: bump
+        run: |
+          python .github/scripts/bump_version.py ${{ inputs.bump_type }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit version bump
+        run: |
+          git add pyproject.toml
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.new_version }}"
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish --token ${{ secrets.UV_PUBLISH_TOKEN }}
+
+      - name: Create and push tag
+        run: |
+          git tag -a v${{ steps.bump.outputs.new_version }} -m "Release v${{ steps.bump.outputs.new_version }}"
+          git push origin v${{ steps.bump.outputs.new_version }}
+          git push origin HEAD:main
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.bump.outputs.new_version }}
+          name: Release v${{ steps.bump.outputs.new_version }}
+          body: |
+            Version ${{ steps.bump.outputs.new_version }} released to PyPI.
+
+            See https://pypi.org/project/kuru-mm-py/${{ steps.bump.outputs.new_version }}/
+          draft: false
+          prerelease: false
