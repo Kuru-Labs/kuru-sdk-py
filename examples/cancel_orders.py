@@ -113,7 +113,7 @@ async def main():
         logger.info(f"Order IDs to cancel: {order_ids}")
 
         # === STEP 2: Build contract function call ===
-        function_call = client.executor.orderbook_contract.functions.batchCancelOrders(order_ids)
+        function_call = client.executor.orderbook_contract.functions.batchUpdate([], [], [], [], order_ids, False)
 
         # === STEP 3: Build manual access list ===
         logger.info("Building manual access list using build_access_list_for_cancel_only()...")

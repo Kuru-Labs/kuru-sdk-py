@@ -454,8 +454,8 @@ wheels = [
 ]
 
 [[package]]
-name = "kuru-mm-py"
-version = "0.1.3"
+name = "kuru-sdk-py"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiocache" },

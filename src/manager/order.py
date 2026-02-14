@@ -23,7 +23,7 @@ class OrderType(Enum):
     MARKET = (
         "market"  # Maps to placeAndExecuteMarketBuy() / placeAndExecuteMarketSell()
     )
-    CANCEL = "cancel"  # Maps to batchCancelOrders()
+    CANCEL = "cancel"  # Maps to batchUpdate()
 
 
 class OrderStatus(Enum):

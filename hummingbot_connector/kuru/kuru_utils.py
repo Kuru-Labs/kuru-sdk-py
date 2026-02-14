@@ -1,68 +1,76 @@
-"""Configuration map and utility helpers for Kuru DEX connector."""
-
+import time
 from typing import Optional
 
-from pydantic import Field, SecretStr
+from pydantic import BaseModel, SecretStr, Field
 
-from hummingbot.client.config.config_data_types import BaseConnectorConfigMap, ClientFieldData
+from src.configs import MarketConfig, ConfigManager
 
-from hummingbot_connector.kuru.kuru_constants import KNOWN_MARKETS
+from hummingbot_connector.kuru import kuru_constants as CONSTANTS
 
 
-class KuruConfigMap(BaseConnectorConfigMap):
-    """Hummingbot config map for the Kuru DEX connector."""
-
-    connector: str = Field(default="kuru", const=True, client_data=None)
+class KuruConfigMap(BaseModel):
+    """Configuration for the Kuru connector (Pydantic model for Hummingbot UI)."""
 
     kuru_private_key: SecretStr = Field(
-        default=...,
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Enter your private key for Kuru DEX",
-            is_secure=True,
-            is_connect_key=True,
-            prompt_on_new=True,
-        ),
+        ...,
+        description="Wallet private key (with 0x prefix)",
     )
-
+    kuru_market_address: str = Field(
+        ...,
+        description="On-chain market contract address",
+    )
     kuru_rpc_url: Optional[str] = Field(
         default=None,
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Enter Monad RPC URL (leave blank for default)",
-            is_connect_key=False,
-            prompt_on_new=False,
-        ),
+        description="HTTP RPC endpoint (defaults to Monad mainnet)",
     )
-
+    kuru_rpc_ws_url: Optional[str] = Field(
+        default=None,
+        description="WebSocket RPC endpoint",
+    )
+    kuru_ws_url: Optional[str] = Field(
+        default=None,
+        description="Kuru orderbook WebSocket URL",
+    )
     kuru_api_url: Optional[str] = Field(
         default=None,
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Enter Kuru API URL (leave blank for default)",
-            is_connect_key=False,
-            prompt_on_new=False,
-        ),
+        description="Kuru REST API URL",
     )
 
-    class Config:
-        title = "kuru"
+
+def get_market_config(market_address: str, rpc_url: Optional[str] = None) -> MarketConfig:
+    """
+    Get MarketConfig for a market address.
+
+    Checks KNOWN_MARKETS first for cached config, falls back to
+    fetching from chain for unknown addresses.
+
+    Args:
+        market_address: On-chain market contract address
+        rpc_url: Optional RPC URL override for chain fetching
+
+    Returns:
+        MarketConfig instance
+    """
+    normalized = market_address.strip()
+
+    # Check known markets (case-insensitive)
+    for addr, config_dict in CONSTANTS.KNOWN_MARKETS.items():
+        if addr.lower() == normalized.lower():
+            return MarketConfig(**config_dict)
+
+    # Unknown market - fetch from chain
+    return ConfigManager.load_market_config(
+        market_address=normalized,
+        fetch_from_chain=True,
+        rpc_url=rpc_url or CONSTANTS.DEFAULT_RPC_URL,
+    )
 
 
-KEYS = KuruConfigMap.construct()
+def trading_pair_from_market_config(market_config: MarketConfig) -> str:
+    """Derive Hummingbot-style trading pair (e.g. 'MON-USDC') from MarketConfig."""
+    return market_config.market_symbol
 
 
-def trading_pair_to_market_address(trading_pair: str) -> Optional[str]:
-    """Convert a Hummingbot trading pair (e.g. 'MON-USDC') to a Kuru market address."""
-    market_info = KNOWN_MARKETS.get(trading_pair)
-    if market_info:
-        return market_info["market_address"]
-    return None
-
-
-def trading_pair_to_market_info(trading_pair: str) -> Optional[dict]:
-    """Return full market info dict for a trading pair, or None if unknown."""
-    return KNOWN_MARKETS.get(trading_pair)
-
-
-def split_trading_pair(trading_pair: str) -> tuple[str, str]:
-    """Split 'BASE-QUOTE' into (base, quote)."""
-    parts = trading_pair.split("-")
-    return parts[0], parts[1]
+def get_current_server_time() -> float:
+    """Return current time. DEX has no server time drift concern."""
+    return time.time()

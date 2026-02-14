@@ -1,153 +1,212 @@
-"""Orderbook data source for Kuru DEX.
-
-Connects to Kuru's WebSocket feed and emits OrderBookMessage snapshots
-for Hummingbot's orderbook tracker.
-"""
-
 import asyncio
 import logging
 import time
-from decimal import Decimal
-from typing import Optional
+from typing import Dict, List, Optional
 
-from hummingbot.connector.exchange_py_base import ExchangePyBase
-from hummingbot.core.data_type.order_book_message import OrderBookMessage, OrderBookMessageType
-from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
+from hummingbot.core.data_type.order_book_message import OrderBookMessage
+from hummingbot.core.data_type.order_book_tracker_data_source import (
+    OrderBookTrackerDataSource,
+)
 
 from src.feed.orderbook_ws import (
-    KuruFrontendOrderbookClient,
     FrontendOrderbookUpdate,
-    WEBSOCKET_PRICE_PRECISION,
+    KuruFrontendOrderbookClient,
 )
-from hummingbot_connector.kuru.kuru_constants import DEFAULT_KURU_WS_URL
+
+from hummingbot_connector.kuru.kuru_order_book import KuruOrderBook
 
 logger = logging.getLogger(__name__)
 
 
 class KuruAPIOrderBookDataSource(OrderBookTrackerDataSource):
-    """Feeds Hummingbot's orderbook tracker with Kuru WebSocket snapshots."""
+    """
+    Orderbook data source for Kuru DEX.
+
+    Consumes FrontendOrderbookUpdate messages from an asyncio.Queue
+    that is fed by the KuruExchange connector via the SDK's orderbook
+    WebSocket callback. Converts them to OrderBookMessage snapshots.
+
+    Kuru sends full orderbook state with each update (not diffs),
+    so listen_for_order_book_diffs is a no-op and all data flows
+    through listen_for_order_book_snapshots.
+    """
 
     def __init__(
         self,
-        trading_pair: str,
-        market_address: str,
-        size_precision: int,
-        connector: ExchangePyBase,
-        ws_url: str = DEFAULT_KURU_WS_URL,
+        trading_pairs: List[str],
+        connector: "KuruExchange",  # noqa: F821
     ):
-        super().__init__(trading_pair)
-        self._trading_pair = trading_pair
-        self._market_address = market_address
-        self._size_precision = size_precision
+        super().__init__(trading_pairs)
         self._connector = connector
-        self._ws_url = ws_url
-        self._ob_client: Optional[KuruFrontendOrderbookClient] = None
-        self._update_queue: asyncio.Queue[FrontendOrderbookUpdate] = asyncio.Queue()
+        self._last_update_id: int = 0
+
+    async def get_last_traded_prices(
+        self,
+        trading_pairs: List[str],
+        domain: Optional[str] = None,
+    ) -> Dict[str, float]:
+        """Return last traded prices from the connector's cache."""
+        return {
+            pair: self._connector.last_traded_prices.get(pair, 0.0)
+            for pair in trading_pairs
+        }
 
     async def listen_for_subscriptions(self):
-        """Connect to Kuru WS and pump updates into the internal queue.
+        """
+        No-op. The SDK manages the orderbook WebSocket connection.
+        Data flows via the shared queue populated by KuruExchange's
+        orderbook callback.
+        """
+        await asyncio.sleep(float("inf"))
 
-        The KuruFrontendOrderbookClient handles reconnection internally.
+    async def listen_for_order_book_diffs(
+        self,
+        ev_loop: asyncio.AbstractEventLoop,
+        output: asyncio.Queue,
+    ):
+        """No-op. Kuru sends full snapshots, not incremental diffs."""
+        await asyncio.sleep(float("inf"))
+
+    async def listen_for_order_book_snapshots(
+        self,
+        ev_loop: asyncio.AbstractEventLoop,
+        output: asyncio.Queue,
+    ):
+        """
+        Consume orderbook updates from the SDK queue and emit
+        OrderBookMessage snapshots.
         """
         while True:
             try:
-                self._ob_client = KuruFrontendOrderbookClient(
-                    ws_url=self._ws_url,
-                    market_address=self._market_address,
-                    update_queue=self._update_queue,
+                update: FrontendOrderbookUpdate = (
+                    await self._connector.sdk_orderbook_queue.get()
                 )
-                await self._ob_client.connect()
-                await self._ob_client.subscribe()
-                # Block until the connection drops (client will push to queue)
-                while self._ob_client.is_connected():
-                    await asyncio.sleep(1.0)
+
+                # Only process updates that include full orderbook state
+                if update.b is None and update.a is None:
+                    continue
+
+                trading_pair = self._connector.trading_pairs[0]
+                size_precision = self._connector.size_precision
+
+                # Convert raw WS prices/sizes to floats
+                bids = []
+                if update.b:
+                    for raw_price, raw_size in update.b:
+                        price = KuruFrontendOrderbookClient.format_websocket_price(
+                            raw_price
+                        )
+                        size = KuruFrontendOrderbookClient.format_websocket_size(
+                            raw_size, size_precision
+                        )
+                        if size > 0:
+                            bids.append([price, size])
+
+                asks = []
+                if update.a:
+                    for raw_price, raw_size in update.a:
+                        price = KuruFrontendOrderbookClient.format_websocket_price(
+                            raw_price
+                        )
+                        size = KuruFrontendOrderbookClient.format_websocket_size(
+                            raw_size, size_precision
+                        )
+                        if size > 0:
+                            asks.append([price, size])
+
+                self._last_update_id += 1
+                timestamp = time.time()
+
+                snapshot_msg = KuruOrderBook.snapshot_message_from_exchange(
+                    msg={
+                        "trading_pair": trading_pair,
+                        "update_id": self._last_update_id,
+                        "bids": bids,
+                        "asks": asks,
+                    },
+                    timestamp=timestamp,
+                )
+                output.put_nowait(snapshot_msg)
+
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception(
-                    f"Error in Kuru orderbook WS for {self._trading_pair}. Reconnecting..."
-                )
-                await asyncio.sleep(5.0)
-            finally:
-                if self._ob_client is not None:
-                    try:
-                        await self._ob_client.close()
-                    except Exception:
-                        pass
-
-    async def listen_for_order_book_diffs(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
-        """Not used -- Kuru sends full snapshots, not diffs."""
-        # Keep alive so the tracker doesn't exit
-        await asyncio.sleep(float("inf"))
-
-    async def listen_for_order_book_snapshots(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
-        """Convert Kuru FrontendOrderbookUpdate into Hummingbot OrderBookMessage snapshots."""
-        while True:
-            try:
-                update: FrontendOrderbookUpdate = await self._update_queue.get()
-                snapshot_msg = self._convert_to_snapshot(update)
-                if snapshot_msg is not None:
-                    output.put_nowait(snapshot_msg)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Error processing Kuru orderbook snapshot")
+                logger.exception("Error processing orderbook snapshot")
                 await asyncio.sleep(1.0)
 
-    def _convert_to_snapshot(self, update: FrontendOrderbookUpdate) -> Optional[OrderBookMessage]:
-        """Convert a Kuru FrontendOrderbookUpdate to an OrderBookMessage snapshot."""
-        bids = update.b
-        asks = update.a
-        if bids is None and asks is None:
-            return None
+    async def listen_for_trades(
+        self,
+        ev_loop: asyncio.AbstractEventLoop,
+        output: asyncio.Queue,
+    ):
+        """
+        Trade messages are extracted from orderbook updates in the
+        exchange connector. This is a no-op here.
+        """
+        await asyncio.sleep(float("inf"))
 
-        timestamp = time.time()
+    async def _order_book_snapshot(
+        self, trading_pair: str
+    ) -> OrderBookMessage:
+        """
+        Return a snapshot from the latest orderbook state.
 
-        bid_entries = []
-        if bids:
-            for raw_price, raw_size in bids:
-                price = Decimal(str(raw_price)) / Decimal(str(WEBSOCKET_PRICE_PRECISION))
-                size = Decimal(str(raw_size)) / Decimal(str(self._size_precision))
-                bid_entries.append([float(price), float(size)])
-
-        ask_entries = []
-        if asks:
-            for raw_price, raw_size in asks:
-                price = Decimal(str(raw_price)) / Decimal(str(WEBSOCKET_PRICE_PRECISION))
-                size = Decimal(str(raw_size)) / Decimal(str(self._size_precision))
-                ask_entries.append([float(price), float(size)])
-
-        content = {
-            "trading_pair": self._trading_pair,
-            "update_id": int(timestamp * 1e3),
-            "bids": bid_entries,
-            "asks": ask_entries,
-        }
-
-        return OrderBookMessage(
-            message_type=OrderBookMessageType.SNAPSHOT,
-            content=content,
-            timestamp=timestamp,
-        )
-
-    async def get_new_order_book(self, trading_pair: str):
-        """Return a fresh OrderBook populated from the latest snapshot."""
-        from hummingbot_connector.kuru.kuru_order_book import KuruOrderBook
-        return KuruOrderBook()
-
-    async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
-        """Return the latest snapshot message (used for initial load)."""
-        update = await self._update_queue.get()
-        msg = self._convert_to_snapshot(update)
-        if msg is None:
-            return OrderBookMessage(
-                message_type=OrderBookMessageType.SNAPSHOT,
-                content={
+        Falls back to an empty snapshot if no data is available yet.
+        """
+        # Try to get an update from the queue with a short timeout
+        try:
+            update = await asyncio.wait_for(
+                self._connector.sdk_orderbook_queue.get(),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            # Return empty snapshot
+            return KuruOrderBook.snapshot_message_from_exchange(
+                msg={
                     "trading_pair": trading_pair,
-                    "update_id": int(time.time() * 1e3),
+                    "update_id": 0,
                     "bids": [],
                     "asks": [],
                 },
                 timestamp=time.time(),
             )
-        return msg
+
+        size_precision = self._connector.size_precision
+
+        bids = []
+        if update.b:
+            for raw_price, raw_size in update.b:
+                price = KuruFrontendOrderbookClient.format_websocket_price(raw_price)
+                size = KuruFrontendOrderbookClient.format_websocket_size(
+                    raw_size, size_precision
+                )
+                if size > 0:
+                    bids.append([price, size])
+
+        asks = []
+        if update.a:
+            for raw_price, raw_size in update.a:
+                price = KuruFrontendOrderbookClient.format_websocket_price(raw_price)
+                size = KuruFrontendOrderbookClient.format_websocket_size(
+                    raw_size, size_precision
+                )
+                if size > 0:
+                    asks.append([price, size])
+
+        self._last_update_id += 1
+        return KuruOrderBook.snapshot_message_from_exchange(
+            msg={
+                "trading_pair": trading_pair,
+                "update_id": self._last_update_id,
+                "bids": bids,
+                "asks": asks,
+            },
+            timestamp=time.time(),
+        )
+
+    # Required abstract methods - not applicable for SDK-based connector
+    async def subscribe_to_trading_pair(self, trading_pair: str) -> bool:
+        return True
+
+    async def unsubscribe_from_trading_pair(self, trading_pair: str) -> bool:
+        return True

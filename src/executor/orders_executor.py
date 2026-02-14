@@ -285,7 +285,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         self, kuru_order_ids: list[int] | list[tuple[int, int, bool]]
     ) -> str:
         """
-        Cancel orders with Kuru order IDs using batchCancelOrders.
+        Cancel orders with Kuru order IDs using batchUpdate.
         Automatically builds and uses EIP-2930 access list when order metadata is provided.
 
         Args:
@@ -310,7 +310,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
             orders_to_cancel_metadata = []
 
         # Build contract function call
-        function_call = self.orderbook_contract.functions.batchCancelOrders(order_ids)
+        function_call = self.orderbook_contract.functions.batchUpdate([], [], [], [], order_ids, False)
 
         # Build access list if we have metadata
         access_list = None

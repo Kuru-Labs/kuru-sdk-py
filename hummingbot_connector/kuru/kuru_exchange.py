@@ -1,7 +1,11 @@
-"""Kuru DEX exchange connector for Hummingbot.
+"""
+Kuru Exchange connector for Hummingbot.
 
-Implements ExchangePyBase by delegating to KuruClient for all on-chain
-operations: order placement, cancellation, balance queries, and event handling.
+Wraps the kuru-mm-py SDK to integrate Kuru's on-chain CLOB DEX
+with Hummingbot's trading strategies (e.g., pure market making).
+
+Key design: SDK order callbacks are bridged to Hummingbot's order
+tracker via an asyncio.Queue, ensuring thread-safe event processing.
 """
 
 import asyncio
@@ -12,14 +16,29 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
-from hummingbot.core.data_type.cancellation_result import CancellationResult
+from hummingbot.core.api_throttler.data_types import RateLimit
 from hummingbot.core.data_type.common import OrderType, TradeType
-from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
-from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
-from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
-from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
+from hummingbot.core.data_type.in_flight_order import (
+    InFlightOrder,
+    OrderState,
+    OrderUpdate,
+    TradeUpdate,
+)
+from hummingbot.core.data_type.order_book_tracker_data_source import (
+    OrderBookTrackerDataSource,
+)
+from hummingbot.core.data_type.trade_fee import (
+    AddedToCostTradeFee,
+    TokenAmount,
+    TradeFeeBase,
+)
+from hummingbot.core.data_type.user_stream_tracker_data_source import (
+    UserStreamTrackerDataSource,
+)
 from hummingbot.core.network_iterator import NetworkStatus
-from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
+from hummingbot.core.web_assistant.web_assistants_factory import (
+    WebAssistantsFactory,
+)
 
 from src.client import KuruClient
 from src.configs import (
@@ -28,337 +47,434 @@ from src.configs import (
     MarketConfig,
     WalletConfig,
 )
-from src.manager.order import Order as KuruOrder, OrderSide as KuruOrderSide, OrderType as KuruOrderType, OrderStatus as KuruOrderStatus
+from src.feed.orderbook_ws import (
+    FrontendOrderbookUpdate,
+    KuruFrontendOrderbookClient,
+)
+from src.manager.order import Order as SdkOrder
+from src.manager.order import OrderSide as SdkOrderSide
+from src.manager.order import OrderStatus as SdkOrderStatus
+from src.manager.order import OrderType as SdkOrderType
 
+from hummingbot_connector.kuru import kuru_constants as CONSTANTS
+from hummingbot_connector.kuru.kuru_api_order_book_data_source import (
+    KuruAPIOrderBookDataSource,
+)
+from hummingbot_connector.kuru.kuru_api_user_stream_data_source import (
+    KuruAPIUserStreamDataSource,
+)
 from hummingbot_connector.kuru.kuru_auth import KuruAuth
-from hummingbot_connector.kuru.kuru_api_order_book_data_source import KuruAPIOrderBookDataSource
-from hummingbot_connector.kuru.kuru_api_user_stream_data_source import KuruAPIUserStreamDataSource
-from hummingbot_connector.kuru.kuru_constants import (
-    EXCHANGE_NAME,
-    DEFAULT_KURU_API_URL,
-    DEFAULT_KURU_WS_URL,
-    DEFAULT_RPC_URL,
-    DEFAULT_RPC_WS_URL,
-    KNOWN_MARKETS,
-)
-from hummingbot_connector.kuru.kuru_utils import (
-    trading_pair_to_market_address,
-    trading_pair_to_market_info,
-)
+from hummingbot_connector.kuru.kuru_utils import get_market_config
 
 logger = logging.getLogger(__name__)
 
-# Kuru OrderStatus -> Hummingbot OrderState mapping
-KURU_TO_HB_ORDER_STATE = {
-    KuruOrderStatus.ORDER_CREATED: OrderState.PENDING_CREATE,
-    KuruOrderStatus.ORDER_SENT: OrderState.PENDING_CREATE,
-    KuruOrderStatus.ORDER_PLACED: OrderState.OPEN,
-    KuruOrderStatus.ORDER_PARTIALLY_FILLED: OrderState.PARTIALLY_FILLED,
-    KuruOrderStatus.ORDER_FULLY_FILLED: OrderState.FILLED,
-    KuruOrderStatus.ORDER_CANCELLED: OrderState.CANCELED,
-    KuruOrderStatus.ORDER_TIMEOUT: OrderState.FAILED,
-}
+s_decimal_NaN = Decimal("nan")
 
 
 class KuruExchange(ExchangePyBase):
-    """Hummingbot CLOB DEX connector for Kuru on Monad."""
+    """
+    Hummingbot exchange connector for Kuru on-chain CLOB DEX.
 
-    web_utils = None  # Not using centralized REST gateway
+    Wraps the Kuru SDK (KuruClient) and bridges its async callback-based
+    event system with Hummingbot's order tracker and strategy framework.
+
+    Order flow:
+        Strategy -> _place_order() -> KuruClient.place_orders() -> on-chain TX
+        on-chain event -> SDK callback -> _sdk_order_event_queue
+        -> _user_stream_event_listener() -> _order_tracker updates -> Strategy
+
+    Balance model:
+        Uses margin account balances (not wallet balances). Orders lock
+        margin: buy orders lock quote, sell orders lock base.
+    """
+
+    # ----------------------------------------------------------------
+    # Class-level config
+    # ----------------------------------------------------------------
+
+    web_utils = None  # Not using REST API throttler
+
+    # SDK Order Status -> Hummingbot OrderState mapping
+    _SDK_STATUS_MAP = {
+        SdkOrderStatus.ORDER_CREATED: OrderState.PENDING_CREATE,
+        SdkOrderStatus.ORDER_SENT: OrderState.PENDING_CREATE,
+        SdkOrderStatus.ORDER_PLACED: OrderState.OPEN,
+        SdkOrderStatus.ORDER_PARTIALLY_FILLED: OrderState.PARTIALLY_FILLED,
+        SdkOrderStatus.ORDER_FULLY_FILLED: OrderState.FILLED,
+        SdkOrderStatus.ORDER_CANCELLED: OrderState.CANCELED,
+        SdkOrderStatus.ORDER_TIMEOUT: OrderState.FAILED,
+    }
 
     def __init__(
         self,
         private_key: str,
+        market_address: str,
         trading_pairs: List[str],
         trading_required: bool = True,
+        domain: str = CONSTANTS.DEFAULT_DOMAIN,
         rpc_url: Optional[str] = None,
         rpc_ws_url: Optional[str] = None,
         kuru_ws_url: Optional[str] = None,
         kuru_api_url: Optional[str] = None,
     ):
-        self._auth = KuruAuth(private_key)
-        self._trading_pairs = trading_pairs
+        # Store all custom fields BEFORE super().__init__()
+        self._private_key = private_key
+        self._market_address = market_address
+        self._domain_str = domain
         self._trading_required = trading_required
+        self._trading_pairs_list = trading_pairs
 
-        # Connection params (use defaults if not provided)
-        self._rpc_url = rpc_url or DEFAULT_RPC_URL
-        self._rpc_ws_url = rpc_ws_url or DEFAULT_RPC_WS_URL
-        self._kuru_ws_url = kuru_ws_url or DEFAULT_KURU_WS_URL
-        self._kuru_api_url = kuru_api_url or DEFAULT_KURU_API_URL
+        # Optional endpoint overrides
+        self._rpc_url = rpc_url
+        self._rpc_ws_url = rpc_ws_url
+        self._kuru_ws_url = kuru_ws_url
+        self._kuru_api_url = kuru_api_url
 
-        # SDK client (created async in start_network)
-        self._kuru_client: Optional[KuruClient] = None
+        # Auth
+        self._kuru_auth = KuruAuth(private_key)
+
+        # SDK components (created in start_network)
+        self._client: Optional[KuruClient] = None
         self._market_config: Optional[MarketConfig] = None
-        self._market_info: Optional[dict] = None
+
+        # Shared queues for SDK -> Hummingbot bridge
+        self._sdk_order_event_queue: asyncio.Queue[SdkOrder] = asyncio.Queue()
+        self._sdk_orderbook_queue: asyncio.Queue[FrontendOrderbookUpdate] = (
+            asyncio.Queue()
+        )
+
+        # Last traded price cache (updated from orderbook WS events)
+        self._last_traded_prices: Dict[str, float] = {}
+
+        # Track SDK start task
+        self._sdk_start_task: Optional[asyncio.Task] = None
 
         super().__init__()
 
     # ----------------------------------------------------------------
-    # ExchangePyBase abstract property implementations
+    # Abstract properties
     # ----------------------------------------------------------------
 
     @property
-    def authenticator(self):
-        return self._auth
-
-    @property
     def name(self) -> str:
-        return EXCHANGE_NAME
+        return CONSTANTS.EXCHANGE_NAME
 
     @property
-    def rate_limits_rules(self) -> List:
-        return []  # On-chain connector, no API rate limits
+    def authenticator(self):
+        return self._kuru_auth
+
+    @property
+    def rate_limits_rules(self) -> List[RateLimit]:
+        return CONSTANTS.RATE_LIMITS
 
     @property
     def domain(self) -> str:
-        return ""
+        return self._domain_str
 
     @property
     def client_order_id_max_length(self) -> int:
-        return 32  # bytes32 on-chain
+        return CONSTANTS.MAX_ORDER_ID_LEN
 
     @property
     def client_order_id_prefix(self) -> str:
-        return "kuru"
+        return CONSTANTS.CLIENT_ORDER_ID_PREFIX
 
     @property
-    def trading_rules(self) -> Dict[str, TradingRule]:
-        return self._trading_rules
+    def trading_rules_request_path(self) -> str:
+        return ""  # Not used - rules come from SDK MarketConfig
+
+    @property
+    def trading_pairs_request_path(self) -> str:
+        return ""  # Not used
+
+    @property
+    def check_network_request_path(self) -> str:
+        return ""  # Not used - we override check_network()
 
     @property
     def trading_pairs(self) -> List[str]:
-        return self._trading_pairs
+        return self._trading_pairs_list
 
     @property
     def is_cancel_request_in_exchange_synchronous(self) -> bool:
-        return False  # Cancel is async (blockchain tx)
+        # Cancel is an on-chain TX - confirmed asynchronously via callback
+        return False
 
     @property
     def is_trading_required(self) -> bool:
         return self._trading_required
 
-    @property
-    def check_network_request_path(self):
-        return ""
-
-    @property
-    def trading_pairs_request_path(self):
-        return ""
+    # ----------------------------------------------------------------
+    # Public accessors for data sources
+    # ----------------------------------------------------------------
 
     @property
-    def status_dict(self) -> Dict[str, bool]:
-        sd = super().status_dict
-        sd["kuru_client_initialized"] = self._kuru_client is not None
-        return sd
+    def sdk_orderbook_queue(self) -> asyncio.Queue:
+        """Queue of FrontendOrderbookUpdate for the orderbook data source."""
+        return self._sdk_orderbook_queue
+
+    @property
+    def last_traded_prices(self) -> Dict[str, float]:
+        return self._last_traded_prices
+
+    @property
+    def size_precision(self) -> int:
+        """Market's size_precision for WS size conversion."""
+        if self._market_config:
+            return self._market_config.size_precision
+        return 1
 
     # ----------------------------------------------------------------
-    # Lifecycle
-    # ----------------------------------------------------------------
-
-    async def start_network(self):
-        """Initialize KuruClient and connect to the blockchain."""
-        await super().start_network()
-
-        trading_pair = self._trading_pairs[0]
-        self._market_info = trading_pair_to_market_info(trading_pair)
-        if self._market_info is None:
-            raise ValueError(
-                f"Unknown trading pair '{trading_pair}'. "
-                f"Known pairs: {list(KNOWN_MARKETS.keys())}"
-            )
-
-        market_address = self._market_info["market_address"]
-
-        # Build SDK configs
-        connection_config = ConnectionConfig(
-            rpc_url=self._rpc_url,
-            rpc_ws_url=self._rpc_ws_url,
-            kuru_ws_url=self._kuru_ws_url,
-            kuru_api_url=self._kuru_api_url,
-        )
-
-        wallet_config = self._auth.get_wallet_config()
-
-        # Load full MarketConfig from known data + chain defaults
-        self._market_config = MarketConfig(
-            market_address=market_address,
-            base_token=self._market_info["base_token"],
-            quote_token=self._market_info["quote_token"],
-            market_symbol=self._market_info["market_symbol"],
-            mm_entrypoint_address="0xA9d8269ad1Bd6e2a02BD8996a338Dc5C16aef440",
-            margin_contract_address="0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5",
-            base_token_decimals=self._market_info["base_token_decimals"],
-            quote_token_decimals=self._market_info["quote_token_decimals"],
-            price_precision=self._market_info["price_precision"],
-            size_precision=self._market_info["size_precision"],
-            base_symbol=self._market_info["base_symbol"],
-            quote_symbol=self._market_info["quote_symbol"],
-            orderbook_implementation="0xea2Cc8769Fb04Ff1893Ed11cf517b7F040C823CD",
-            margin_account_implementation="0x57cF97FE1FAC7D78B07e7e0761410cb2e91F0ca7",
-        )
-
-        # Create and start the SDK client
-        self._kuru_client = await KuruClient.create(
-            market_config=self._market_config,
-            connection_config=connection_config,
-            wallet_config=wallet_config,
-        )
-
-        # Register our callback for order status updates
-        self._kuru_client.set_order_callback(self._on_kuru_order_update)
-
-        await self._kuru_client.start()
-
-        # Populate trading rules
-        self._trading_rules = self._format_trading_rules()
-
-        logger.info(
-            f"Kuru client started for {trading_pair} "
-            f"(market: {market_address}, wallet: {self._auth.wallet_address})"
-        )
-
-    async def stop_network(self):
-        """Stop the SDK client (cancels orders, closes connections)."""
-        if self._kuru_client is not None:
-            try:
-                await self._kuru_client.stop()
-            except Exception:
-                logger.exception("Error stopping Kuru client")
-            self._kuru_client = None
-        await super().stop_network()
-
-    async def check_network(self) -> NetworkStatus:
-        """Check if the SDK client is connected and operational."""
-        if self._kuru_client is None:
-            return NetworkStatus.NOT_CONNECTED
-        try:
-            # Quick balance check to verify connectivity
-            await self._kuru_client.user.get_margin_balances()
-            return NetworkStatus.CONNECTED
-        except Exception:
-            return NetworkStatus.NOT_CONNECTED
-
-    # ----------------------------------------------------------------
-    # Data source factories
-    # ----------------------------------------------------------------
-
-    def _create_order_book_data_source(self) -> OrderBookTrackerDataSource:
-        trading_pair = self._trading_pairs[0]
-        market_info = trading_pair_to_market_info(trading_pair)
-        return KuruAPIOrderBookDataSource(
-            trading_pair=trading_pair,
-            market_address=market_info["market_address"],
-            size_precision=market_info["size_precision"],
-            connector=self,
-            ws_url=self._kuru_ws_url,
-        )
-
-    def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
-        return KuruAPIUserStreamDataSource()
-
-    # ----------------------------------------------------------------
-    # Order management
+    # Supported order types
     # ----------------------------------------------------------------
 
     def supported_order_types(self) -> List[OrderType]:
         return [OrderType.LIMIT, OrderType.LIMIT_MAKER]
 
-    def buy(
-        self, trading_pair: str, amount: Decimal, order_type: OrderType, price: Decimal, **kwargs
-    ) -> str:
-        order_id = self._create_client_order_id(TradeType.BUY, trading_pair)
-        safe_ensure_future(self._create_order(
-            trade_type=TradeType.BUY,
-            order_id=order_id,
-            trading_pair=trading_pair,
-            amount=amount,
-            order_type=order_type,
-            price=price,
-        ))
-        return order_id
+    # ----------------------------------------------------------------
+    # Lifecycle: start / stop / check_network
+    # ----------------------------------------------------------------
 
-    def sell(
-        self, trading_pair: str, amount: Decimal, order_type: OrderType, price: Decimal, **kwargs
-    ) -> str:
-        order_id = self._create_client_order_id(TradeType.SELL, trading_pair)
-        safe_ensure_future(self._create_order(
-            trade_type=TradeType.SELL,
-            order_id=order_id,
-            trading_pair=trading_pair,
-            amount=amount,
-            order_type=order_type,
-            price=price,
-        ))
-        return order_id
+    async def start_network(self):
+        await super().start_network()
+        self._sdk_start_task = asyncio.ensure_future(self._start_sdk())
 
-    def _create_client_order_id(self, trade_type: TradeType, trading_pair: str) -> str:
-        nonce = get_tracking_nonce()
-        side = "B" if trade_type == TradeType.BUY else "S"
-        return f"{self.client_order_id_prefix}{side}{nonce}"
+    async def stop_network(self):
+        if self._sdk_start_task is not None:
+            self._sdk_start_task.cancel()
+            self._sdk_start_task = None
 
-    async def _create_order(
-        self,
-        trade_type: TradeType,
-        order_id: str,
-        trading_pair: str,
-        amount: Decimal,
-        order_type: OrderType,
-        price: Decimal,
-        **kwargs,
-    ):
-        """Create and track an order, then submit it to Kuru."""
+        if self._client is not None:
+            try:
+                await self._client.stop()
+            except Exception:
+                logger.exception("Error stopping KuruClient")
+            self._client = None
+
+        await super().stop_network()
+
+    async def check_network(self) -> NetworkStatus:
         try:
-            # Start tracking in Hummingbot
-            self.start_tracking_order(
-                order_id=order_id,
-                exchange_order_id=None,
-                trading_pair=trading_pair,
-                trade_type=trade_type,
-                price=price,
-                amount=amount,
-                order_type=order_type,
+            if self._client is None:
+                return NetworkStatus.NOT_CONNECTED
+            if not self._client.is_healthy():
+                return NetworkStatus.NOT_CONNECTED
+            return NetworkStatus.CONNECTED
+        except Exception:
+            return NetworkStatus.NOT_CONNECTED
+
+    async def _start_sdk(self):
+        """Initialize the Kuru SDK client and connect to all services."""
+        try:
+            # Load market config (checks known markets, falls back to chain)
+            self._market_config = get_market_config(
+                self._market_address,
+                rpc_url=self._rpc_url,
             )
-
-            # Build Kuru order
-            kuru_side = KuruOrderSide.BUY if trade_type == TradeType.BUY else KuruOrderSide.SELL
-            post_only = order_type in (OrderType.LIMIT_MAKER, OrderType.LIMIT)
-
-            kuru_order = KuruOrder(
-                cloid=order_id,
-                order_type=KuruOrderType.LIMIT,
-                side=kuru_side,
-                price=float(price),
-                size=float(amount),
-                post_only=post_only,
-            )
-
-            # Submit to blockchain via SDK
-            tx_hash = await self._kuru_client.place_orders([kuru_order])
-
-            # Update tracked order with initial info
-            order_update = OrderUpdate(
-                client_order_id=order_id,
-                exchange_order_id=tx_hash,  # Temporary; real kuru_order_id comes via callback
-                trading_pair=trading_pair,
-                update_timestamp=time.time(),
-                new_state=OrderState.PENDING_CREATE,
-            )
-            self._order_tracker.process_order_update(order_update)
-
             logger.info(
-                f"Submitted {trade_type.name} order {order_id}: "
-                f"{amount} @ {price} (tx: {tx_hash})"
+                f"Loaded market config: {self._market_config.market_symbol} "
+                f"(price_precision={self._market_config.price_precision}, "
+                f"size_precision={self._market_config.size_precision}, "
+                f"tick_size={self._market_config.tick_size})"
             )
 
-        except Exception as e:
-            logger.exception(f"Error placing order {order_id}: {e}")
-            self.stop_tracking_order(order_id)
-            order_update = OrderUpdate(
-                client_order_id=order_id,
-                trading_pair=trading_pair,
-                update_timestamp=time.time(),
-                new_state=OrderState.FAILED,
+            # Build SDK configs
+            wallet_config = self._kuru_auth.get_wallet_config()
+            connection_config = ConnectionConfig(
+                rpc_url=self._rpc_url or CONSTANTS.DEFAULT_RPC_URL,
+                rpc_ws_url=self._rpc_ws_url or CONSTANTS.DEFAULT_RPC_WS_URL,
+                kuru_ws_url=self._kuru_ws_url or CONSTANTS.DEFAULT_KURU_WS_URL,
+                kuru_api_url=self._kuru_api_url or CONSTANTS.DEFAULT_KURU_API_URL,
             )
-            self._order_tracker.process_order_update(order_update)
+
+            # Create SDK client
+            self._client = await KuruClient.create(
+                market_config=self._market_config,
+                connection_config=connection_config,
+                wallet_config=wallet_config,
+            )
+
+            # Register callbacks BEFORE start
+            self._client.set_order_callback(self._on_sdk_order_event)
+            self._client.set_orderbook_callback(self._on_sdk_orderbook_event)
+
+            # Start client (EIP-7702 auth, RPC WebSocket, event processing)
+            await self._client.start()
+
+            # Subscribe to orderbook WebSocket
+            await self._client.subscribe_to_orderbook()
+
+            # Build initial trading rules
+            await self._update_trading_rules()
+
+            logger.info("Kuru SDK started successfully")
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to start Kuru SDK")
+            raise
+
+    # ----------------------------------------------------------------
+    # SDK callbacks
+    # ----------------------------------------------------------------
+
+    async def _on_sdk_order_event(self, sdk_order: SdkOrder):
+        """SDK order callback -> push to bridge queue."""
+        await self._sdk_order_event_queue.put(sdk_order)
+
+    async def _on_sdk_orderbook_event(self, update: FrontendOrderbookUpdate):
+        """SDK orderbook callback -> update last traded price + push to queue."""
+        # Extract last traded price from trade events
+        for event in update.events:
+            if event.e == "Trade" and event.p is not None:
+                price = KuruFrontendOrderbookClient.format_websocket_price(event.p)
+                for pair in self._trading_pairs_list:
+                    self._last_traded_prices[pair] = price
+
+        await self._sdk_orderbook_queue.put(update)
+
+    # ----------------------------------------------------------------
+    # User stream event listener (SDK callback bridge)
+    # ----------------------------------------------------------------
+
+    async def _user_stream_event_listener(self):
+        """
+        Consume SDK order events from the bridge queue and map them
+        to Hummingbot OrderUpdate / TradeUpdate for the order tracker.
+        """
+        while True:
+            try:
+                sdk_order: SdkOrder = await self._sdk_order_event_queue.get()
+                await self._process_sdk_order_event(sdk_order)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Error in SDK order event listener")
+                await asyncio.sleep(1.0)
+
+    async def _process_sdk_order_event(self, sdk_order: SdkOrder):
+        """Process a single SDK Order event."""
+        client_order_id = sdk_order.cloid
+
+        # Skip cancel-type orders (cancel confirmations come via original order)
+        if sdk_order.order_type == SdkOrderType.CANCEL:
+            return
+
+        # Find the tracked order in Hummingbot
+        tracked_order = self._order_tracker.fetch_order(
+            client_order_id=client_order_id
+        )
+        if tracked_order is None:
+            return
+
+        status = sdk_order.status
+
+        if status == SdkOrderStatus.ORDER_PLACED:
+            # Order confirmed on-chain - update to real exchange_order_id
+            exchange_order_id = (
+                str(sdk_order.kuru_order_id)
+                if sdk_order.kuru_order_id is not None
+                else None
+            )
+            self._order_tracker.process_order_update(
+                OrderUpdate(
+                    trading_pair=tracked_order.trading_pair,
+                    update_timestamp=time.time(),
+                    new_state=OrderState.OPEN,
+                    client_order_id=client_order_id,
+                    exchange_order_id=exchange_order_id,
+                )
+            )
+
+        elif status in (
+            SdkOrderStatus.ORDER_PARTIALLY_FILLED,
+            SdkOrderStatus.ORDER_FULLY_FILLED,
+        ):
+            # Process any new fills
+            self._process_fills(sdk_order, tracked_order)
+
+            new_state = (
+                OrderState.PARTIALLY_FILLED
+                if status == SdkOrderStatus.ORDER_PARTIALLY_FILLED
+                else OrderState.FILLED
+            )
+            self._order_tracker.process_order_update(
+                OrderUpdate(
+                    trading_pair=tracked_order.trading_pair,
+                    update_timestamp=time.time(),
+                    new_state=new_state,
+                    client_order_id=client_order_id,
+                    exchange_order_id=tracked_order.exchange_order_id,
+                )
+            )
+
+        elif status == SdkOrderStatus.ORDER_CANCELLED:
+            self._order_tracker.process_order_update(
+                OrderUpdate(
+                    trading_pair=tracked_order.trading_pair,
+                    update_timestamp=time.time(),
+                    new_state=OrderState.CANCELED,
+                    client_order_id=client_order_id,
+                    exchange_order_id=tracked_order.exchange_order_id,
+                )
+            )
+
+        elif status == SdkOrderStatus.ORDER_TIMEOUT:
+            self._order_tracker.process_order_update(
+                OrderUpdate(
+                    trading_pair=tracked_order.trading_pair,
+                    update_timestamp=time.time(),
+                    new_state=OrderState.FAILED,
+                    client_order_id=client_order_id,
+                    exchange_order_id=tracked_order.exchange_order_id,
+                )
+            )
+
+    def _process_fills(self, sdk_order: SdkOrder, tracked_order: InFlightOrder):
+        """
+        Emit TradeUpdate for each new fill in the SDK order.
+
+        Compares the number of fills already reported to Hummingbot
+        (len(tracked_order.order_fills)) against the SDK's fill list
+        (sdk_order.filled_sizes) and reports only new ones.
+        """
+        already_reported = len(tracked_order.order_fills)
+        all_fills = sdk_order.filled_sizes
+
+        exchange_order_id = (
+            str(sdk_order.kuru_order_id)
+            if sdk_order.kuru_order_id is not None
+            else tracked_order.exchange_order_id
+        )
+
+        for i in range(already_reported, len(all_fills)):
+            fill_size = Decimal(str(all_fills[i]))
+            # Maker fills execute at the limit price
+            fill_price = tracked_order.price if tracked_order.price else Decimal("0")
+            fill_quote = fill_price * fill_size
+
+            fee = AddedToCostTradeFee(
+                percent=Decimal("0"),  # Maker fee is 0%
+            )
+
+            trade_update = TradeUpdate(
+                trade_id=f"{sdk_order.cloid}_{i}",
+                client_order_id=sdk_order.cloid,
+                exchange_order_id=exchange_order_id,
+                trading_pair=tracked_order.trading_pair,
+                fill_timestamp=time.time(),
+                fill_price=fill_price,
+                fill_base_amount=fill_size,
+                fill_quote_amount=fill_quote,
+                fee=fee,
+                is_taker=False,
+            )
+            self._order_tracker.process_trade_update(trade_update)
+
+    # ----------------------------------------------------------------
+    # Order placement
+    # ----------------------------------------------------------------
 
     async def _place_order(
         self,
@@ -370,206 +486,164 @@ class KuruExchange(ExchangePyBase):
         price: Decimal,
         **kwargs,
     ) -> Tuple[str, float]:
-        """ExchangePyBase hook for placing an order. Returns (exchange_order_id, timestamp)."""
-        kuru_side = KuruOrderSide.BUY if trade_type == TradeType.BUY else KuruOrderSide.SELL
-        post_only = order_type in (OrderType.LIMIT_MAKER, OrderType.LIMIT)
+        """
+        Place a single limit order on Kuru via the SDK.
 
-        kuru_order = KuruOrder(
+        Returns (txhash, timestamp). The txhash serves as a temporary
+        exchange_order_id until the real kuru_order_id arrives via callback.
+        """
+        if self._client is None:
+            raise RuntimeError("KuruClient not initialized - call start_network first")
+
+        side = SdkOrderSide.BUY if trade_type == TradeType.BUY else SdkOrderSide.SELL
+
+        sdk_order = SdkOrder(
             cloid=order_id,
-            order_type=KuruOrderType.LIMIT,
-            side=kuru_side,
+            order_type=SdkOrderType.LIMIT,
+            side=side,
             price=float(price),
             size=float(amount),
-            post_only=post_only,
+            post_only=True,
         )
 
-        tx_hash = await self._kuru_client.place_orders([kuru_order])
-        return tx_hash, time.time()
+        txhash = await self._client.place_orders([sdk_order])
+        return txhash, time.time()
 
-    async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
-        """Cancel an order by its on-chain kuru_order_id."""
-        if tracked_order.exchange_order_id is None:
-            logger.warning(f"Cannot cancel {order_id}: no exchange_order_id yet")
+    # ----------------------------------------------------------------
+    # Order cancellation
+    # ----------------------------------------------------------------
+
+    async def _place_cancel(
+        self, order_id: str, tracked_order: InFlightOrder
+    ):
+        """
+        Cancel an order on Kuru via the SDK.
+
+        Returns True if cancel TX was submitted, False if the order
+        hasn't been confirmed on-chain yet (kuru_order_id unknown).
+        """
+        if self._client is None:
+            logger.warning("Cannot cancel: KuruClient not initialized")
             return False
 
-        # Look up the kuru order ID from the orders manager
-        kuru_order_id = None
-        if self._kuru_client is not None:
-            kuru_order_id = self._kuru_client.orders_manager.get_kuru_order_id(order_id)
-
+        kuru_order_id = self._client.orders_manager.get_kuru_order_id(order_id)
         if kuru_order_id is None:
-            # Fall back to exchange_order_id if it was set to the kuru_order_id
-            try:
-                kuru_order_id = int(tracked_order.exchange_order_id)
-            except (ValueError, TypeError):
-                logger.warning(f"Cannot cancel {order_id}: unable to resolve kuru_order_id")
-                return False
+            logger.warning(
+                f"Cannot cancel {order_id}: kuru_order_id not yet available "
+                "(order may not be confirmed on-chain yet)"
+            )
+            return False
 
-        cancel_order = KuruOrder(
-            cloid=f"cancel_{order_id}",
-            order_type=KuruOrderType.CANCEL,
+        cancel_order = SdkOrder(
+            cloid=order_id,
+            order_type=SdkOrderType.CANCEL,
             order_ids_to_cancel=[kuru_order_id],
         )
 
         try:
-            await self._kuru_client.place_orders([cancel_order])
+            await self._client.place_orders([cancel_order])
             return True
-        except Exception as e:
-            logger.exception(f"Error cancelling order {order_id}: {e}")
+        except Exception:
+            logger.exception(f"Failed to cancel order {order_id}")
             return False
 
-    async def cancel_all(self, timeout_seconds: float) -> List[CancellationResult]:
-        """Cancel all active orders on the market."""
-        results = []
-        if self._kuru_client is not None:
-            try:
-                await self._kuru_client.cancel_all_active_orders_for_market()
-                for order_id, tracked_order in self._order_tracker.active_orders.items():
-                    results.append(CancellationResult(order_id, True))
-            except Exception as e:
-                logger.exception(f"Error cancelling all orders: {e}")
-                for order_id in self._order_tracker.active_orders:
-                    results.append(CancellationResult(order_id, False))
-        return results
-
     # ----------------------------------------------------------------
-    # SDK callback: order status updates
-    # ----------------------------------------------------------------
-
-    async def _on_kuru_order_update(self, kuru_order: KuruOrder):
-        """Callback invoked by KuruClient when an order's status changes.
-
-        Maps Kuru order events to Hummingbot OrderUpdate/TradeUpdate.
-        """
-        client_order_id = kuru_order.cloid
-
-        # Skip cancel-type orders
-        if kuru_order.order_type == KuruOrderType.CANCEL:
-            return
-
-        tracked_order = self._order_tracker.fetch_tracked_order(client_order_id)
-        if tracked_order is None:
-            logger.debug(f"Received update for untracked order: {client_order_id}")
-            return
-
-        trading_pair = tracked_order.trading_pair
-        new_state = KURU_TO_HB_ORDER_STATE.get(kuru_order.status)
-        if new_state is None:
-            return
-
-        # Set the real exchange_order_id from kuru_order_id
-        exchange_order_id = tracked_order.exchange_order_id
-        if kuru_order.kuru_order_id is not None:
-            exchange_order_id = str(kuru_order.kuru_order_id)
-
-        # Emit OrderUpdate
-        order_update = OrderUpdate(
-            client_order_id=client_order_id,
-            exchange_order_id=exchange_order_id,
-            trading_pair=trading_pair,
-            update_timestamp=kuru_order.timestamp,
-            new_state=new_state,
-        )
-        self._order_tracker.process_order_update(order_update)
-
-        # Emit TradeUpdate on fills
-        if new_state in (OrderState.PARTIALLY_FILLED, OrderState.FILLED):
-            fill_amount = self._compute_fill_amount(kuru_order, tracked_order)
-            if fill_amount > Decimal("0"):
-                fee = self.get_fee(
-                    tracked_order.base_asset,
-                    tracked_order.quote_asset,
-                    tracked_order.order_type,
-                    tracked_order.trade_type,
-                    fill_amount,
-                    tracked_order.price,
-                )
-                trade_update = TradeUpdate(
-                    trade_id=f"{client_order_id}_{int(time.time() * 1e6)}",
-                    client_order_id=client_order_id,
-                    exchange_order_id=exchange_order_id,
-                    trading_pair=trading_pair,
-                    fee=fee,
-                    fill_base_amount=fill_amount,
-                    fill_quote_amount=fill_amount * tracked_order.price,
-                    fill_price=tracked_order.price,
-                    fill_timestamp=kuru_order.timestamp,
-                )
-                self._order_tracker.process_trade_update(trade_update)
-
-    def _compute_fill_amount(self, kuru_order: KuruOrder, tracked_order: InFlightOrder) -> Decimal:
-        """Compute incremental fill amount from order size change."""
-        original_size = tracked_order.amount
-        if kuru_order.size is not None:
-            remaining = Decimal(str(kuru_order.size))
-            filled_so_far = original_size - remaining
-            already_filled = tracked_order.executed_amount_base
-            incremental = filled_so_far - already_filled
-            return max(incremental, Decimal("0"))
-        return Decimal("0")
-
-    # ----------------------------------------------------------------
-    # Balances
+    # Balance management
     # ----------------------------------------------------------------
 
     async def _update_balances(self):
-        """Fetch margin balances from the Kuru SDK."""
-        if self._kuru_client is None:
+        """
+        Fetch margin account balances and compute available balances.
+
+        Available = margin balance - locked in open orders.
+        Buy orders lock quote tokens, sell orders lock base tokens.
+        """
+        if self._client is None or self._market_config is None:
             return
 
         try:
-            base_wei, quote_wei = await self._kuru_client.user.get_margin_balances()
-
-            base_decimals = self._market_info["base_token_decimals"]
-            quote_decimals = self._market_info["quote_token_decimals"]
-
-            base_balance = Decimal(str(base_wei)) / Decimal(10 ** base_decimals)
-            quote_balance = Decimal(str(quote_wei)) / Decimal(10 ** quote_decimals)
-
-            base_symbol = self._market_info["base_symbol"]
-            quote_symbol = self._market_info["quote_symbol"]
-
-            self._account_balances[base_symbol] = base_balance
-            self._account_balances[quote_symbol] = quote_balance
-            self._account_available_balances[base_symbol] = base_balance
-            self._account_available_balances[quote_symbol] = quote_balance
-
+            base_margin_wei, quote_margin_wei = (
+                await self._client.user.get_margin_balances()
+            )
         except Exception:
-            logger.exception("Error updating Kuru balances")
+            logger.exception("Failed to fetch margin balances")
+            return
+
+        mc = self._market_config
+        base_symbol = mc.base_symbol
+        quote_symbol = mc.quote_symbol
+
+        base_total = Decimal(str(base_margin_wei)) / Decimal(
+            10 ** mc.base_token_decimals
+        )
+        quote_total = Decimal(str(quote_margin_wei)) / Decimal(
+            10 ** mc.quote_token_decimals
+        )
+
+        # Compute locked amounts from active orders
+        locked_base = Decimal("0")
+        locked_quote = Decimal("0")
+        for order in self._order_tracker.active_orders.values():
+            remaining = order.amount - order.executed_amount_base
+            if remaining <= Decimal("0"):
+                continue
+            if order.trade_type == TradeType.BUY:
+                order_price = order.price if order.price else Decimal("0")
+                locked_quote += order_price * remaining
+            else:
+                locked_base += remaining
+
+        self._account_balances[base_symbol] = base_total
+        self._account_balances[quote_symbol] = quote_total
+        self._account_available_balances[base_symbol] = max(
+            Decimal("0"), base_total - locked_base
+        )
+        self._account_available_balances[quote_symbol] = max(
+            Decimal("0"), quote_total - locked_quote
+        )
 
     # ----------------------------------------------------------------
     # Trading rules
     # ----------------------------------------------------------------
 
-    def _format_trading_rules(self) -> Dict[str, TradingRule]:
-        """Build trading rules from the market config."""
-        rules = {}
-        if self._market_config is not None:
-            trading_pair = self._trading_pairs[0]
-            price_precision = self._market_config.price_precision
-            size_precision = self._market_config.size_precision
-
-            min_price_increment = Decimal("1") / Decimal(str(price_precision))
-            min_base_increment = Decimal("1") / Decimal(str(size_precision))
-
-            rules[trading_pair] = TradingRule(
-                trading_pair=trading_pair,
-                min_price_increment=min_price_increment,
-                min_base_amount_increment=min_base_increment,
-                min_order_size=min_base_increment,
-                supports_limit_orders=True,
-                supports_market_orders=False,  # Kuru SDK supports them, but start with limit only
-                buy_order_collateral_token=self._market_info["quote_symbol"],
-                sell_order_collateral_token=self._market_info["base_symbol"],
-            )
-        return rules
-
     async def _update_trading_rules(self):
-        """Refresh trading rules (no-op for now; rules are static from market config)."""
-        self._trading_rules = self._format_trading_rules()
+        """Build trading rules from the SDK's MarketConfig."""
+        if self._market_config is None:
+            return
 
-    async def _format_trading_rules_from_exchange_info(self, exchange_info: Any) -> List[TradingRule]:
-        """Not used -- rules come from MarketConfig."""
+        mc = self._market_config
+        trading_pair = self._trading_pairs_list[0]
+
+        min_price_increment = Decimal(str(mc.tick_size)) / Decimal(
+            str(mc.price_precision)
+        )
+        min_base_amount_increment = Decimal("1") / Decimal(str(mc.size_precision))
+
+        rule = TradingRule(
+            trading_pair=trading_pair,
+            min_price_increment=min_price_increment,
+            min_base_amount_increment=min_base_amount_increment,
+            supports_limit_orders=True,
+            supports_market_orders=False,
+            buy_order_collateral_token=mc.quote_symbol,
+            sell_order_collateral_token=mc.base_symbol,
+        )
+        self._trading_rules.clear()
+        self._trading_rules[trading_pair] = rule
+
+    async def _format_trading_rules(
+        self, exchange_info_dict: Dict[str, Any]
+    ) -> List[TradingRule]:
+        """
+        Parse trading rules from exchange info.
+
+        Called by the base class polling loop. We override
+        _update_trading_rules to build rules from MarketConfig
+        directly, so this is a passthrough.
+        """
+        # If market config is available, build from it
+        if self._market_config is not None:
+            await self._update_trading_rules()
         return list(self._trading_rules.values())
 
     # ----------------------------------------------------------------
@@ -583,82 +657,196 @@ class KuruExchange(ExchangePyBase):
         order_type: OrderType,
         order_side: TradeType,
         amount: Decimal,
-        price: Decimal = Decimal("0"),
+        price: Decimal = s_decimal_NaN,
         is_maker: Optional[bool] = None,
     ) -> AddedToCostTradeFee:
-        """Return fee estimate. Kuru maker fee is 0; taker fee is small."""
-        if is_maker is None:
-            is_maker = order_type in (OrderType.LIMIT_MAKER, OrderType.LIMIT)
-
-        if is_maker:
-            return AddedToCostTradeFee(
-                percent=Decimal("0"),
-                flat_fees=[],
-            )
-        else:
-            # Default taker fee estimate (actual fee depends on market params)
-            return AddedToCostTradeFee(
-                percent=Decimal("0.001"),  # 10 bps default taker
-                flat_fees=[],
-            )
-
-    # ----------------------------------------------------------------
-    # REST polling fallbacks (required by ExchangePyBase)
-    # ----------------------------------------------------------------
-
-    async def _update_order_status(self):
-        """Poll for order status updates.
-
-        Primary updates come via the SDK callback. This is a fallback
-        to catch any missed events.
         """
-        if self._kuru_client is None:
-            return
+        Return trade fee estimate.
 
-        for order_id, tracked_order in self._order_tracker.active_orders.items():
-            kuru_order = self._kuru_client.orders_manager.cloid_to_order.get(order_id)
-            if kuru_order is not None:
-                await self._on_kuru_order_update(kuru_order)
-
-    async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
-        """Return trade updates for a specific order (used during recovery)."""
-        return []
-
-    async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
-        """Request current status of a tracked order."""
-        if self._kuru_client is not None:
-            kuru_order = self._kuru_client.orders_manager.cloid_to_order.get(
-                tracked_order.client_order_id
+        Kuru maker orders (post-only) have 0% fee.
+        Taker orders have ~10 bps fee (for estimation).
+        """
+        is_maker = is_maker or order_type in (OrderType.LIMIT, OrderType.LIMIT_MAKER)
+        if is_maker:
+            return AddedToCostTradeFee(percent=Decimal("0"))
+        else:
+            return AddedToCostTradeFee(
+                percent=Decimal(str(CONSTANTS.DEFAULT_TAKER_FEE_BPS)) / Decimal("10000")
             )
-            if kuru_order is not None:
-                new_state = KURU_TO_HB_ORDER_STATE.get(
-                    kuru_order.status, OrderState.PENDING_CREATE
-                )
-                exchange_order_id = tracked_order.exchange_order_id
-                if kuru_order.kuru_order_id is not None:
-                    exchange_order_id = str(kuru_order.kuru_order_id)
-                return OrderUpdate(
-                    client_order_id=tracked_order.client_order_id,
-                    exchange_order_id=exchange_order_id,
-                    trading_pair=tracked_order.trading_pair,
-                    update_timestamp=time.time(),
-                    new_state=new_state,
-                )
 
-        return OrderUpdate(
-            client_order_id=tracked_order.client_order_id,
-            exchange_order_id=tracked_order.exchange_order_id,
-            trading_pair=tracked_order.trading_pair,
-            update_timestamp=time.time(),
-            new_state=tracked_order.current_state,
-        )
+    async def _update_trading_fees(self):
+        """No dynamic fee updates needed for on-chain DEX."""
+        pass
+
+    # ----------------------------------------------------------------
+    # Last traded price
+    # ----------------------------------------------------------------
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
-        """Return the last traded price. Falls back to 0 if unavailable."""
-        # Could parse from orderbook WS events; for now return 0
-        return 0.0
+        """Return last traded price from orderbook WS events."""
+        return self._last_traded_prices.get(trading_pair, 0.0)
 
+    # ----------------------------------------------------------------
+    # Order status queries (REST fallback)
+    # ----------------------------------------------------------------
 
-def safe_ensure_future(coro):
-    """Schedule a coroutine without awaiting it."""
-    asyncio.ensure_future(coro)
+    async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
+        """
+        Query current order status from the SDK's order manager.
+
+        This is a fallback for when events are missed. The primary
+        order tracking is via SDK callbacks.
+        """
+        client_order_id = tracked_order.client_order_id
+        sdk_order = self._client.orders_manager.cloid_to_order.get(
+            client_order_id
+        ) if self._client else None
+
+        if sdk_order is None:
+            # Order not found in SDK - might have been cleaned up
+            return OrderUpdate(
+                trading_pair=tracked_order.trading_pair,
+                update_timestamp=time.time(),
+                new_state=tracked_order.current_state,
+                client_order_id=client_order_id,
+                exchange_order_id=tracked_order.exchange_order_id,
+            )
+
+        new_state = self._SDK_STATUS_MAP.get(
+            sdk_order.status, tracked_order.current_state
+        )
+        exchange_order_id = (
+            str(sdk_order.kuru_order_id)
+            if sdk_order.kuru_order_id is not None
+            else tracked_order.exchange_order_id
+        )
+
+        return OrderUpdate(
+            trading_pair=tracked_order.trading_pair,
+            update_timestamp=time.time(),
+            new_state=new_state,
+            client_order_id=client_order_id,
+            exchange_order_id=exchange_order_id,
+        )
+
+    async def _all_trade_updates_for_order(
+        self, order: InFlightOrder
+    ) -> List[TradeUpdate]:
+        """
+        Return all trade fills for an order from the SDK.
+
+        Fallback for missed fill events.
+        """
+        if self._client is None:
+            return []
+
+        sdk_order = self._client.orders_manager.cloid_to_order.get(
+            order.client_order_id
+        )
+        if sdk_order is None:
+            return []
+
+        exchange_order_id = (
+            str(sdk_order.kuru_order_id)
+            if sdk_order.kuru_order_id is not None
+            else order.exchange_order_id
+        )
+
+        trade_updates = []
+        for i, fill_size in enumerate(sdk_order.filled_sizes):
+            fill_amount = Decimal(str(fill_size))
+            fill_price = order.price if order.price else Decimal("0")
+
+            trade_updates.append(
+                TradeUpdate(
+                    trade_id=f"{sdk_order.cloid}_{i}",
+                    client_order_id=sdk_order.cloid,
+                    exchange_order_id=exchange_order_id,
+                    trading_pair=order.trading_pair,
+                    fill_timestamp=time.time(),
+                    fill_price=fill_price,
+                    fill_base_amount=fill_amount,
+                    fill_quote_amount=fill_price * fill_amount,
+                    fee=AddedToCostTradeFee(percent=Decimal("0")),
+                    is_taker=False,
+                )
+            )
+        return trade_updates
+
+    # ----------------------------------------------------------------
+    # Network check override
+    # ----------------------------------------------------------------
+
+    async def _make_network_check_request(self):
+        """Override to check SDK health instead of REST ping."""
+        if self._client is None:
+            raise ConnectionError("KuruClient not initialized")
+        if not self._client.is_healthy():
+            raise ConnectionError("KuruClient is not healthy")
+
+    async def _make_trading_rules_request(self) -> Any:
+        """Override to return market config data instead of REST call."""
+        if self._market_config is not None:
+            return {"market_config": self._market_config}
+        return {}
+
+    async def _make_trading_pairs_request(self) -> Any:
+        """Override to return configured trading pairs."""
+        return {"pairs": self._trading_pairs_list}
+
+    # ----------------------------------------------------------------
+    # Error classification
+    # ----------------------------------------------------------------
+
+    def _is_request_exception_related_to_time_synchronizer(
+        self, request_exception: Exception
+    ) -> bool:
+        # DEX has no server time sync issues
+        return False
+
+    def _is_order_not_found_during_status_update_error(
+        self, status_update_exception: Exception
+    ) -> bool:
+        return "not found" in str(status_update_exception).lower()
+
+    def _is_order_not_found_during_cancelation_error(
+        self, cancelation_exception: Exception
+    ) -> bool:
+        return "not found" in str(cancelation_exception).lower()
+
+    # ----------------------------------------------------------------
+    # Factory methods for data sources
+    # ----------------------------------------------------------------
+
+    def _create_web_assistants_factory(self) -> Optional[WebAssistantsFactory]:
+        """Not used - SDK handles all network communication."""
+        return None
+
+    def _create_order_book_data_source(self) -> OrderBookTrackerDataSource:
+        return KuruAPIOrderBookDataSource(
+            trading_pairs=self._trading_pairs_list,
+            connector=self,
+        )
+
+    def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
+        return KuruAPIUserStreamDataSource(connector=self)
+
+    # ----------------------------------------------------------------
+    # Trading pair symbol mapping
+    # ----------------------------------------------------------------
+
+    def _initialize_trading_pair_symbols_from_exchange_info(
+        self, exchange_info: Dict[str, Any]
+    ):
+        """
+        Build trading pair symbol map.
+
+        For Kuru, the trading pair is derived from MarketConfig.market_symbol
+        (e.g., "MON-USDC") and maps 1:1 with the Hummingbot trading pair.
+        """
+        from bidict import bidict
+
+        mapping = bidict()
+        for pair in self._trading_pairs_list:
+            mapping[pair] = pair  # exchange symbol == hummingbot symbol
+        self._set_trading_pair_symbol_map(mapping)
