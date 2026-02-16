@@ -534,6 +534,16 @@ ENV_AUTO_APPROVE = "KURU_AUTO_APPROVE"
 ENV_USE_ACCESS_LIST = "KURU_USE_ACCESS_LIST"
 """Environment variable for EIP-2930 access list flag (true/false)"""
 
+# Logging configuration
+ENV_LOG_LEVEL = "LOG_LEVEL"
+"""
+Environment variable for log level (default: INFO).
+
+Valid values: TRACE, DEBUG, INFO, SUCCESS, WARNING, ERROR, CRITICAL
+
+Set to DEBUG or TRACE to see more verbose output, including unknown event notices.
+"""
+
 # Cache configuration
 ENV_PENDING_TX_TTL = "KURU_PENDING_TX_TTL"
 """Environment variable for pending transaction cache TTL (seconds)"""

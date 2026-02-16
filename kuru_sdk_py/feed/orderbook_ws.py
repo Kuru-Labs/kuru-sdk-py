@@ -533,7 +533,7 @@ class KuruFrontendOrderbookClient:
                 asyncio.create_task(self._handle_orderbook_update(data))
 
             else:
-                logger.debug(
+                logger.trace(
                     f"Unknown message type: {msg_type}, data keys: {list(data.keys())}"
                 )
 

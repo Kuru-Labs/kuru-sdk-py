@@ -528,10 +528,10 @@ class ExchangeWebsocketClient:
                     await self._handle_monad_depth_update(data)
 
                 else:
-                    logger.warning(f"Unknown event type: {event_type}")
+                    logger.trace(f"Unknown event type: {event_type}")
 
             else:
-                logger.debug(
+                logger.trace(
                     f"Unknown message format, keys: {list(data.keys())}"
                 )
 

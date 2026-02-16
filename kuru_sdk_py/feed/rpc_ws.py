@@ -270,7 +270,7 @@ class RpcWebsocket:
         elif log_address == self.user_address_lower:
             await self._batch_update_mm_log(log, topic0, txhash)
         elif log_address is not None:
-            logger.debug(f"Log from unknown contract address: {log_address}")
+            logger.trace(f"Log from unknown contract address: {log_address}")
 
     async def process_subscription_logs(self) -> None:
         """
@@ -587,7 +587,7 @@ class RpcWebsocket:
             await self.orders_manager.on_trade(event)
 
         else:
-            logger.debug(f"Unknown orderbook topic: {topic0}")
+            logger.trace(f"Unknown orderbook topic: {topic0}")
 
     async def _batch_update_mm_log(self, log, topic0: str, txhash: str) -> None:
         """Process logs from MM entrypoint contract."""
@@ -618,4 +618,4 @@ class RpcWebsocket:
             await self.orders_manager.on_batch_update_mm(event)
 
         else:
-            logger.warning(f"Unknown MM entrypoint topic: {topic0}")
+            logger.trace(f"Unknown MM entrypoint topic: {topic0}")
