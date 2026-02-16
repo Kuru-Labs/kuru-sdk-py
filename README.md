@@ -14,9 +14,9 @@ A Python SDK for building market maker bots on the [Kuru](https://kuru.io) order
 ## Installation
 
 ```bash
-pip install kuru-mm-py
+pip install kuru-sdk-py
 # or
-uv add kuru-mm-py
+uv add kuru-sdk-py
 ```
 
 Create a `.env` file:
