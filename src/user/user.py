@@ -84,8 +84,6 @@ class User(AsyncTransactionSenderMixin):
         # Initialize AsyncWeb3
         self.w3 = AsyncWeb3(AsyncHTTPProvider(self.rpc_url))
 
-        logger.info(f"AsyncWeb3 initialized for RPC at {self.rpc_url}")
-
         # Create account from private key for signing transactions
         self.account = self.w3.eth.account.from_key(private_key)
 
@@ -117,16 +115,10 @@ class User(AsyncTransactionSenderMixin):
                 address=self.quote_token_address, abi=erc20_abi
             )
 
-        logger.info(f"User initialized for address: {self.user_address}")
-        logger.info(f"Margin contract: {self.margin_contract_address}")
-        logger.info(f"MM Entrypoint: {self.mm_entrypoint_address}")
         logger.info(
-            f"Base token: {self.base_token_address} "
-            f"({'native' if is_native_token(self.base_token_address) else 'ERC20'})"
-        )
-        logger.info(
-            f"Quote token: {self.quote_token_address} "
-            f"({'native' if is_native_token(self.quote_token_address) else 'ERC20'})"
+            f"User initialized for {self.user_address} | "
+            f"Margin: {self.margin_contract_address} | "
+            f"MM Entrypoint: {self.mm_entrypoint_address}"
         )
 
     # Conversion helper methods
@@ -146,7 +138,7 @@ class User(AsyncTransactionSenderMixin):
             0.1 -> 100000000000000000 (10^17)
             1.0 -> 1000000000000000000 (10^18)
         """
-        return int(amount * (10 ** self.base_token_decimals))
+        return int(amount * (10**self.base_token_decimals))
 
     def _convert_quote_amount(self, amount: float) -> int:
         """
@@ -163,7 +155,7 @@ class User(AsyncTransactionSenderMixin):
             0.1 -> 100000 (10^5)
             1.0 -> 1000000 (10^6)
         """
-        return int(amount * (10 ** self.quote_token_decimals))
+        return int(amount * (10**self.quote_token_decimals))
 
     # Balance query methods
 
@@ -181,17 +173,11 @@ class User(AsyncTransactionSenderMixin):
             if is_native_token(self.base_token_address):
                 # Native token - query chain balance
                 balance = await self.w3.eth.get_balance(self.user_address)
-                logger.debug(
-                    f"Base token (native) balance for {self.user_address}: {balance} wei"
-                )
             else:
                 # ERC20 token - query contract
                 balance = await self.base_token_contract.functions.balanceOf(
                     self.user_address
                 ).call()
-                logger.debug(
-                    f"Base token (ERC20) balance for {self.user_address}: {balance} wei"
-                )
             return balance
         except Exception as e:
             logger.error(f"Failed to get base token balance: {e}")
@@ -211,17 +197,11 @@ class User(AsyncTransactionSenderMixin):
             if is_native_token(self.quote_token_address):
                 # Native token - query chain balance
                 balance = await self.w3.eth.get_balance(self.user_address)
-                logger.debug(
-                    f"Quote token (native) balance for {self.user_address}: {balance} wei"
-                )
             else:
                 # ERC20 token - query contract
                 balance = await self.quote_token_contract.functions.balanceOf(
                     self.user_address
                 ).call()
-                logger.debug(
-                    f"Quote token (ERC20) balance for {self.user_address}: {balance} wei"
-                )
             return balance
         except Exception as e:
             logger.error(f"Failed to get quote token balance: {e}")
@@ -256,12 +236,8 @@ class User(AsyncTransactionSenderMixin):
         """
         try:
             balance = await self.margin_contract.functions.getBalance(
-                self.user_address,
-                self.base_token_address
+                self.user_address, self.base_token_address
             ).call()
-            logger.debug(
-                f"Margin contract base balance for {self.user_address}: {balance} wei"
-            )
             return balance
         except Exception as e:
             logger.error(f"Failed to get margin base balance: {e}")
@@ -282,12 +258,8 @@ class User(AsyncTransactionSenderMixin):
         """
         try:
             balance = await self.margin_contract.functions.getBalance(
-                self.user_address,
-                self.quote_token_address
+                self.user_address, self.quote_token_address
             ).call()
-            logger.debug(
-                f"Margin contract quote balance for {self.user_address}: {balance} wei"
-            )
             return balance
         except Exception as e:
             logger.error(f"Failed to get margin quote balance: {e}")
@@ -414,7 +386,7 @@ class User(AsyncTransactionSenderMixin):
     async def approve_base(self, amount: int) -> str:
         """
         Approve margin contract to spend base tokens.
-        
+
         This method waits for the approval transaction to be confirmed on-chain
         before returning.
 
@@ -442,18 +414,14 @@ class User(AsyncTransactionSenderMixin):
         )
         tx_hash = await self._send_transaction(function_call, value=0)
 
-        logger.info(f"Base token approval transaction sent: {tx_hash}")
-        
-        # Wait for transaction confirmation
         await self._wait_for_transaction_receipt(tx_hash)
-        logger.info(f"Base token approval confirmed")
-        
+
         return tx_hash
 
     async def approve_quote(self, amount: int) -> str:
         """
         Approve margin contract to spend quote tokens.
-        
+
         This method waits for the approval transaction to be confirmed on-chain
         before returning.
 
@@ -481,18 +449,14 @@ class User(AsyncTransactionSenderMixin):
         )
         tx_hash = await self._send_transaction(function_call, value=0)
 
-        logger.info(f"Quote token approval transaction sent: {tx_hash}")
-        
-        # Wait for transaction confirmation
         await self._wait_for_transaction_receipt(tx_hash)
-        logger.info(f"Quote token approval confirmed")
-        
+
         return tx_hash
 
     async def approve_max_base(self) -> str:
         """
         Approve maximum uint256 amount of base tokens for margin contract.
-        
+
         This method waits for the approval transaction to be confirmed on-chain
         before returning.
 
@@ -513,7 +477,7 @@ class User(AsyncTransactionSenderMixin):
     async def approve_max_quote(self) -> str:
         """
         Approve maximum uint256 amount of quote tokens for margin contract.
-        
+
         This method waits for the approval transaction to be confirmed on-chain
         before returning.
 
@@ -539,8 +503,8 @@ class User(AsyncTransactionSenderMixin):
 
         For ERC20 tokens, automatically approves if needed when auto_approve=True.
         For native tokens, sends the amount as transaction value.
-        
-        This method waits for the deposit transaction (and approval if needed) 
+
+        This method waits for the deposit transaction (and approval if needed)
         to be confirmed on-chain before returning.
 
         Args:
@@ -557,7 +521,7 @@ class User(AsyncTransactionSenderMixin):
         """
         # Convert float amount to integer wei value
         amount_wei = self._convert_base_amount(amount)
-        
+
         is_native = is_native_token(self.base_token_address)
 
         # Handle approval for ERC20 tokens
@@ -565,12 +529,10 @@ class User(AsyncTransactionSenderMixin):
             current_allowance = await self.get_base_allowance()
             if current_allowance < amount_wei:
                 if auto_approve:
-                    logger.warning(
-                        f"Base token allowance ({current_allowance} wei) insufficient for deposit ({amount_wei} wei). "
-                        "Auto-approving..."
+                    logger.info(
+                        f"Auto-approving base token allowance: {amount_wei} wei (had {current_allowance} wei)"
                     )
                     await self.approve_base(amount_wei)
-                    logger.info("Auto-approval complete")
                 else:
                     raise ValueError(
                         f"Insufficient allowance for base token. Need {amount_wei} wei, have {current_allowance} wei. "
@@ -617,12 +579,8 @@ class User(AsyncTransactionSenderMixin):
         )
         tx_hash = await self._send_transaction(function_call, value=value_param)
 
-        logger.info(f"Base token deposit transaction sent: {tx_hash}")
-        
-        # Wait for transaction confirmation
         await self._wait_for_transaction_receipt(tx_hash)
-        logger.info(f"Base token deposit confirmed")
-        
+
         return tx_hash
 
     async def deposit_quote(self, amount: float, auto_approve: bool = True) -> str:
@@ -631,8 +589,8 @@ class User(AsyncTransactionSenderMixin):
 
         For ERC20 tokens, automatically approves if needed when auto_approve=True.
         For native tokens, sends the amount as transaction value.
-        
-        This method waits for the deposit transaction (and approval if needed) 
+
+        This method waits for the deposit transaction (and approval if needed)
         to be confirmed on-chain before returning.
 
         Args:
@@ -649,7 +607,7 @@ class User(AsyncTransactionSenderMixin):
         """
         # Convert float amount to integer wei value
         amount_wei = self._convert_quote_amount(amount)
-        
+
         is_native = is_native_token(self.quote_token_address)
 
         # Handle approval for ERC20 tokens
@@ -657,12 +615,10 @@ class User(AsyncTransactionSenderMixin):
             current_allowance = await self.get_quote_allowance()
             if current_allowance < amount_wei:
                 if auto_approve:
-                    logger.warning(
-                        f"Quote token allowance ({current_allowance} wei) insufficient for deposit ({amount_wei} wei). "
-                        "Auto-approving..."
+                    logger.info(
+                        f"Auto-approving quote token allowance: {amount_wei} wei (had {current_allowance} wei)"
                     )
                     await self.approve_quote(amount_wei)
-                    logger.info("Auto-approval complete")
                 else:
                     raise ValueError(
                         f"Insufficient allowance for quote token. Need {amount_wei} wei, have {current_allowance} wei. "
@@ -709,12 +665,8 @@ class User(AsyncTransactionSenderMixin):
         )
         tx_hash = await self._send_transaction(function_call, value=value_param)
 
-        logger.info(f"Quote token deposit transaction sent: {tx_hash}")
-        
-        # Wait for transaction confirmation
         await self._wait_for_transaction_receipt(tx_hash)
-        logger.info(f"Quote token deposit confirmed")
-        
+
         return tx_hash
 
     # Withdraw methods
@@ -722,8 +674,8 @@ class User(AsyncTransactionSenderMixin):
     async def withdraw_base(self, amount: float) -> str:
         """
         Withdraw base tokens from margin account.
-        
-        This method waits for the withdrawal transaction to be confirmed 
+
+        This method waits for the withdrawal transaction to be confirmed
         on-chain before returning.
 
         Args:
@@ -738,7 +690,7 @@ class User(AsyncTransactionSenderMixin):
         """
         # Convert float amount to integer wei value
         amount_wei = self._convert_base_amount(amount)
-        
+
         is_native = is_native_token(self.base_token_address)
         token_param = ZERO_ADDRESS if is_native else self.base_token_address
 
@@ -751,19 +703,15 @@ class User(AsyncTransactionSenderMixin):
         function_call = self.margin_contract.functions.withdraw(amount_wei, token_param)
         tx_hash = await self._send_transaction(function_call, value=0)
 
-        logger.info(f"Base token withdraw transaction sent: {tx_hash}")
-        
-        # Wait for transaction confirmation
         await self._wait_for_transaction_receipt(tx_hash)
-        logger.info(f"Base token withdraw confirmed")
-        
+
         return tx_hash
 
     async def withdraw_quote(self, amount: float) -> str:
         """
         Withdraw quote tokens from margin account.
-        
-        This method waits for the withdrawal transaction to be confirmed 
+
+        This method waits for the withdrawal transaction to be confirmed
         on-chain before returning.
 
         Args:
@@ -778,7 +726,7 @@ class User(AsyncTransactionSenderMixin):
         """
         # Convert float amount to integer wei value
         amount_wei = self._convert_quote_amount(amount)
-        
+
         is_native = is_native_token(self.quote_token_address)
         token_param = ZERO_ADDRESS if is_native else self.quote_token_address
 
@@ -791,12 +739,8 @@ class User(AsyncTransactionSenderMixin):
         function_call = self.margin_contract.functions.withdraw(amount_wei, token_param)
         tx_hash = await self._send_transaction(function_call, value=0)
 
-        logger.info(f"Quote token withdraw transaction sent: {tx_hash}")
-        
-        # Wait for transaction confirmation
         await self._wait_for_transaction_receipt(tx_hash)
-        logger.info(f"Quote token withdraw confirmed")
-        
+
         return tx_hash
 
     # EIP-7702 Authorization
@@ -829,7 +773,9 @@ class User(AsyncTransactionSenderMixin):
         # Fetch and log native balance before authorization
         native_balance = await self.w3.eth.get_balance(self.user_address)
         native_balance_readable = native_balance / 1e18
-        logger.info(f"Native balance: {native_balance} wei ({native_balance_readable:.6f} tokens)")
+        logger.info(
+            f"Native balance: {native_balance} wei ({native_balance_readable:.6f} tokens)"
+        )
 
         try:
             # Get chain ID and nonce
@@ -865,7 +811,9 @@ class User(AsyncTransactionSenderMixin):
 
             logger.info(f"Gas price parameters:")
             logger.info(f"  Base fee: {base_fee} wei ({base_fee / 1e9:.2f} gwei)")
-            logger.info(f"  Max priority fee: {max_priority_fee} wei ({max_priority_fee / 1e9:.2f} gwei)")
+            logger.info(
+                f"  Max priority fee: {max_priority_fee} wei ({max_priority_fee / 1e9:.2f} gwei)"
+            )
             logger.info(f"  Max fee per gas: {max_fee} wei ({max_fee / 1e9:.2f} gwei)")
 
             # Build type 4 transaction
@@ -896,8 +844,12 @@ class User(AsyncTransactionSenderMixin):
 
             logger.info(f"Transaction cost estimate:")
             logger.info(f"  Gas: {tx['gas']}")
-            logger.info(f"  Gas cost: {estimated_gas_cost} wei ({estimated_gas_cost / 1e18:.6f} tokens)")
-            logger.info(f"  Total required: {total_required} wei ({total_required / 1e18:.6f} tokens)")
+            logger.info(
+                f"  Gas cost: {estimated_gas_cost} wei ({estimated_gas_cost / 1e18:.6f} tokens)"
+            )
+            logger.info(
+                f"  Total required: {total_required} wei ({total_required / 1e18:.6f} tokens)"
+            )
 
             if native_balance < total_required:
                 raise ValueError(
@@ -921,7 +873,9 @@ class User(AsyncTransactionSenderMixin):
 
             # Wait for transaction confirmation
             tx_receipt = await self._wait_for_transaction_receipt(tx_hash_hex)
-            logger.info(f"EIP-7702 authorization confirmed in block {tx_receipt['blockNumber']}")
+            logger.info(
+                f"EIP-7702 authorization confirmed in block {tx_receipt['blockNumber']}"
+            )
 
             return tx_receipt
 
@@ -1032,8 +986,7 @@ class User(AsyncTransactionSenderMixin):
     async def close(self) -> None:
         """Close the HTTP provider session."""
         try:
-            if hasattr(self.w3.provider, '_session') and self.w3.provider._session:
+            if hasattr(self.w3.provider, "_session") and self.w3.provider._session:
                 await self.w3.provider._session.close()
-                logger.debug("User HTTP provider session closed")
-        except Exception as e:
-            logger.debug(f"Error closing user HTTP provider session: {e}")
+        except Exception:
+            pass

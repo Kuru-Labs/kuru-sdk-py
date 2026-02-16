@@ -10,6 +10,7 @@ from .nonce_manager import NonceManager
 from src.utils.errors import decode_contract_error
 from src.configs import TransactionConfig
 
+
 @runtime_checkable
 class AsyncTransactionSenderProtocol(Protocol):
     """Protocol defining required attributes for AsyncTransactionSenderMixin."""
@@ -62,7 +63,9 @@ class AsyncTransactionSenderMixin:
         """
         try:
             # Get nonce from local manager (fetches from RPC only if not initialized)
-            nonce = await NonceManager.get_and_increment_nonce(self.w3, self.user_address)
+            nonce = await NonceManager.get_and_increment_nonce(
+                self.w3, self.user_address
+            )
 
             # Get gas price
             gas_price = await self.w3.eth.gas_price
@@ -78,7 +81,6 @@ class AsyncTransactionSenderMixin:
             # Add access list if provided
             if access_list:
                 tx_params["accessList"] = access_list
-                logger.debug(f"Including access list with {len(access_list)} entries")
 
             # Build transaction
             tx = await function_call.build_transaction(tx_params)
@@ -90,27 +92,29 @@ class AsyncTransactionSenderMixin:
                 # Manually adjust gas when access list is provided
                 # RPC may overestimate gas per storage slot
                 if access_list:
-                    total_storage_slots = sum(len(entry.get('storageKeys', [])) for entry in access_list)
+                    total_storage_slots = sum(
+                        len(entry.get("storageKeys", [])) for entry in access_list
+                    )
                     # Use config for gas adjustment
-                    adjusted_gas = estimated_gas - (total_storage_slots * self.transaction_config.gas_adjustment_per_slot)
-                    final_gas = int(adjusted_gas * self.transaction_config.gas_buffer_multiplier)
-                    logger.debug(
-                        f"Access list gas adjustment: "
-                        f"estimated={estimated_gas}, slots={total_storage_slots}, "
-                        f"adjusted={adjusted_gas}, final={final_gas} "
-                        f"(buffer={self.transaction_config.gas_buffer_multiplier}x)"
+                    adjusted_gas = estimated_gas - (
+                        total_storage_slots
+                        * self.transaction_config.gas_adjustment_per_slot
+                    )
+                    final_gas = int(
+                        adjusted_gas * self.transaction_config.gas_buffer_multiplier
                     )
                     tx["gas"] = final_gas
                 else:
                     tx["gas"] = int(estimated_gas)
-                    logger.debug(f"Estimated gas: {estimated_gas}, using: {tx['gas']}")
             except Exception as e:
                 # Try to decode contract error for better error message
                 decoded_error = decode_contract_error(e)
 
                 if decoded_error:
                     error_msg = f"Transaction would revert: {decoded_error}"
-                    logger.error(f"Gas estimation failed with contract error: {decoded_error}")
+                    logger.error(
+                        f"Gas estimation failed with contract error: {decoded_error}"
+                    )
                     logger.debug(f"Original exception: {e}")
                 else:
                     error_msg = f"Transaction would fail: {e}"
@@ -139,7 +143,11 @@ class AsyncTransactionSenderMixin:
 
             # Check for insufficient funds error
             error_str = str(e)
-            if "Insufficient funds" in error_str or (hasattr(e, 'args') and isinstance(e.args[0], dict) and e.args[0].get('code') == -32003):
+            if "Insufficient funds" in error_str or (
+                hasattr(e, "args")
+                and isinstance(e.args[0], dict)
+                and e.args[0].get("code") == -32003
+            ):
                 # Get current balance for helpful error message
                 try:
                     current_balance = await self.w3.eth.get_balance(self.user_address)
@@ -205,9 +213,9 @@ class AsyncTransactionSenderMixin:
         if poll_latency is None:
             poll_latency = self.transaction_config.poll_latency
 
-        logger.info(f"Waiting for transaction {tx_hash} to be confirmed (timeout={timeout}s)...")
-        receipt = await self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
-        logger.info(f"Transaction {tx_hash} confirmed in block {receipt['blockNumber']}")
+        receipt = await self.w3.eth.wait_for_transaction_receipt(
+            tx_hash, timeout=timeout
+        )
 
         # Brief delay to allow RPC node to update nonce state
         if poll_latency > 0:

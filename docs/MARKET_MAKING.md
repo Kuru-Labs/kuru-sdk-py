@@ -181,25 +181,17 @@ async def on_orderbook(update: FrontendOrderbookUpdate) -> None:
     global best_bid, best_ask
 
     if update.b:
-        best_bid = KuruFrontendOrderbookClient.format_websocket_price(update.b[0][0])
+        best_bid = update.b[0][0]  # Already a float
     if update.a:
-        best_ask = KuruFrontendOrderbookClient.format_websocket_price(update.a[0][0])
+        best_ask = update.a[0][0]  # Already a float
 
 client.set_orderbook_callback(on_orderbook)
 await client.subscribe_to_orderbook()
 ```
 
-### Important: WebSocket price/size units
+### WebSocket price/size units
 
-The **frontend orderbook WebSocket** uses fixed units:
-
-- Prices are always sent in `10^18` format (regardless of market precision)
-- Sizes are sent in the market’s `size_precision` format
-
-Use:
-
-- `KuruFrontendOrderbookClient.format_websocket_price(raw_price_1e18) -> float`
-- `KuruFrontendOrderbookClient.format_websocket_size(raw_size, market_config.size_precision) -> float`
+Prices and sizes in `FrontendOrderbookUpdate` are pre-normalized to human-readable floats. No manual conversion is needed.
 
 ---
 

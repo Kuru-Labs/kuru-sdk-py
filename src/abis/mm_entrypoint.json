@@ -1,90 +1,101 @@
-{
-  "_format": "hh-sol-artifact-1",
-  "contractName": "MMEntrypoint",
-  "sourceName": "contracts/MMEntrypoint.sol",
-  "abi": [
-    {
-      "anonymous": false,
-      "inputs": [
-        {
-          "indexed": false,
-          "internalType": "bytes32[]",
-          "name": "buyCloids",
-          "type": "bytes32[]"
-        },
-        {
-          "indexed": false,
-          "internalType": "bytes32[]",
-          "name": "sellCloids",
-          "type": "bytes32[]"
-        },
-        {
-          "indexed": false,
-          "internalType": "bytes32[]",
-          "name": "cancelCloids",
-          "type": "bytes32[]"
-        }
-      ],
-      "name": "batchUpdate",
-      "type": "event"
-    },
-    {
-      "inputs": [
-        {
-          "internalType": "address",
-          "name": "orderBook",
-          "type": "address"
-        },
-        {
-          "internalType": "bytes32[]",
-          "name": "buyCloids",
-          "type": "bytes32[]"
-        },
-        {
-          "internalType": "bytes32[]",
-          "name": "sellCloids",
-          "type": "bytes32[]"
-        },
-        {
-          "internalType": "bytes32[]",
-          "name": "cancelCloids",
-          "type": "bytes32[]"
-        },
-        {
-          "internalType": "uint32[]",
-          "name": "buyPrices",
-          "type": "uint32[]"
-        },
-        {
-          "internalType": "uint96[]",
-          "name": "buySizes",
-          "type": "uint96[]"
-        },
-        {
-          "internalType": "uint32[]",
-          "name": "sellPrices",
-          "type": "uint32[]"
-        },
-        {
-          "internalType": "uint96[]",
-          "name": "sellSizes",
-          "type": "uint96[]"
-        },
-        {
-          "internalType": "uint40[]",
-          "name": "orderIdsToCancel",
-          "type": "uint40[]"
-        },
-        {
-          "internalType": "bool",
-          "name": "postOnly",
-          "type": "bool"
-        }
-      ],
-      "name": "batchUpdateMM",
-      "outputs": [],
-      "stateMutability": "nonpayable",
-      "type": "function"
-    }
-  ]
-}
+[
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "bytes32[]",
+        "name": "buyCloids",
+        "type": "bytes32[]"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32[]",
+        "name": "sellCloids",
+        "type": "bytes32[]"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32[]",
+        "name": "cancelCloids",
+        "type": "bytes32[]"
+      }
+    ],
+    "name": "batchUpdate",
+    "type": "event"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "orderBook",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32[]",
+            "name": "buyCloids",
+            "type": "bytes32[]"
+          },
+          {
+            "internalType": "bytes32[]",
+            "name": "sellCloids",
+            "type": "bytes32[]"
+          },
+          {
+            "internalType": "bytes32[]",
+            "name": "cancelCloids",
+            "type": "bytes32[]"
+          },
+          {
+            "internalType": "uint32[]",
+            "name": "buyPrices",
+            "type": "uint32[]"
+          },
+          {
+            "internalType": "uint96[]",
+            "name": "buySizes",
+            "type": "uint96[]"
+          },
+          {
+            "internalType": "uint32[]",
+            "name": "sellPrices",
+            "type": "uint32[]"
+          },
+          {
+            "internalType": "uint96[]",
+            "name": "sellSizes",
+            "type": "uint96[]"
+          },
+          {
+            "internalType": "uint40[]",
+            "name": "orderIdsToCancel",
+            "type": "uint40[]"
+          },
+          {
+            "internalType": "bool",
+            "name": "postOnly",
+            "type": "bool"
+          }
+        ],
+        "internalType": "struct PlacerWithCloid.BatchUpdateMMParams",
+        "name": "params",
+        "type": "tuple"
+      }
+    ],
+    "name": "batchUpdateMM",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "stateMutability": "payable",
+    "type": "receive"
+  }
+]

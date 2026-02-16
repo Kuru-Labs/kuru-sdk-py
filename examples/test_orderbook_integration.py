@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 # Add parent directory to path to import src module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.client import KuruClient
-from src.feed.orderbook_ws import FrontendOrderbookUpdate, KuruFrontendOrderbookClient
+from src.feed.orderbook_ws import FrontendOrderbookUpdate
 from src.configs import ConfigManager, MARKETS
 
 load_dotenv()
@@ -28,10 +28,10 @@ async def orderbook_handler(update: FrontendOrderbookUpdate):
     Args:
         update: FrontendOrderbookUpdate containing orderbook data
     """
-    # Log best bid/ask if available
+    # Log best bid/ask if available (prices are pre-normalized floats)
     if update.b and update.a:
-        best_bid = KuruFrontendOrderbookClient.format_websocket_price(update.b[0][0])
-        best_ask = KuruFrontendOrderbookClient.format_websocket_price(update.a[0][0])
+        best_bid = update.b[0][0]
+        best_ask = update.a[0][0]
         spread = best_ask - best_bid
         logger.info(f"Best bid: {best_bid}, Best ask: {best_ask}, Spread: {spread}")
 
@@ -44,8 +44,7 @@ async def orderbook_handler(update: FrontendOrderbookUpdate):
 
             # Log additional details for trades
             if event_type == "Trade" and event.p and event.s:
-                price = KuruFrontendOrderbookClient.format_websocket_price(event.p)
-                logger.info(f"  Trade price: {price}")
+                logger.info(f"  Trade price: {event.p}")
 
 
 async def main():

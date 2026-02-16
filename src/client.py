@@ -204,8 +204,12 @@ class KuruClient:
 
         # Orderbook websocket consumer
         self._orderbook_ws_client: Optional[KuruFrontendOrderbookClient] = None
-        self._orderbook_update_queue: Optional[asyncio.Queue[FrontendOrderbookUpdate]] = None
-        self._orderbook_callback: Optional[Callable[[FrontendOrderbookUpdate], Awaitable[None]]] = None
+        self._orderbook_update_queue: Optional[
+            asyncio.Queue[FrontendOrderbookUpdate]
+        ] = None
+        self._orderbook_callback: Optional[
+            Callable[[FrontendOrderbookUpdate], Awaitable[None]]
+        ] = None
         self._orderbook_consumer_task: Optional[asyncio.Task] = None
 
         # Initialize RpcWebsocket (listens to blockchain events)
@@ -250,7 +254,6 @@ class KuruClient:
             - Callback can be set before or after calling start()
         """
         self._order_callback = callback
-        logger.info(f"Order callback {'set' if callback else 'cleared'}")
 
         # If client is already started and callback is set, start consumer
         if (
@@ -260,7 +263,6 @@ class KuruClient:
         ):
             if self._order_consumer_task is None or self._order_consumer_task.done():
                 self._order_consumer_task = asyncio.create_task(self._consume_orders())
-                logger.info("Order consumer task started")
 
     def set_orderbook_callback(
         self, callback: Optional[Callable[[FrontendOrderbookUpdate], Awaitable[None]]]
@@ -278,8 +280,8 @@ class KuruClient:
         Example:
             async def my_orderbook_handler(update: FrontendOrderbookUpdate):
                 if update.b and update.a:  # Has bids and asks
-                    best_bid = KuruFrontendOrderbookClient.format_websocket_price(update.b[0][0])
-                    best_ask = KuruFrontendOrderbookClient.format_websocket_price(update.a[0][0])
+                    best_bid = update.b[0][0]
+                    best_ask = update.a[0][0]
                     logger.info(f"Spread: {best_ask - best_bid}")
 
             client.set_orderbook_callback(my_orderbook_handler)
@@ -290,7 +292,6 @@ class KuruClient:
             - Callback can be set before or after calling subscribe_to_orderbook()
         """
         self._orderbook_callback = callback
-        logger.info(f"Orderbook callback {'set' if callback else 'cleared'}")
 
         # If client is already subscribed and callback is set, start consumer
         if (
@@ -298,9 +299,13 @@ class KuruClient:
             and self._orderbook_ws_client is not None
             and self._orderbook_ws_client.is_connected()
         ):
-            if self._orderbook_consumer_task is None or self._orderbook_consumer_task.done():
-                self._orderbook_consumer_task = asyncio.create_task(self._consume_orderbook_updates())
-                logger.info("Orderbook consumer task started")
+            if (
+                self._orderbook_consumer_task is None
+                or self._orderbook_consumer_task.done()
+            ):
+                self._orderbook_consumer_task = asyncio.create_task(
+                    self._consume_orderbook_updates()
+                )
 
     async def start(self) -> None:
         """
@@ -362,12 +367,18 @@ class KuruClient:
         # Use config default if not specified
         if post_only is None:
             post_only = self.order_execution_config.post_only
+
         # split the orders list into buy orders, sell orders and cancel orders
         buy_orders = [order for order in orders if order.side == OrderSide.BUY]
         sell_orders = [order for order in orders if order.side == OrderSide.SELL]
         cancel_orders = [
             order for order in orders if order.order_type == OrderType.CANCEL
         ]
+
+        logger.info(
+            f"Placing batch order: {len(buy_orders)} buy orders, "
+            f"{len(sell_orders)} sell orders, {len(cancel_orders)} cancel orders"
+        )
 
         # sort the buy orders by price in descending order
         buy_orders.sort(key=lambda x: x.price, reverse=True)
@@ -379,7 +390,6 @@ class KuruClient:
         for order in orders_to_register:
             order.update_status(OrderStatus.ORDER_SENT)
             self.orders_manager.cloid_to_order[order.cloid] = order
-
 
         buy_cloids = [string_to_bytes32(order.cloid) for order in buy_orders]
         buy_prices = [order.price for order in buy_orders]
@@ -413,7 +423,9 @@ class KuruClient:
                 and original_order.side is not None
             ):
                 # Convert price to integer using market precision
-                price_int = int(original_order.price * self.market_config.price_precision)
+                price_int = int(
+                    original_order.price * self.market_config.price_precision
+                )
                 is_buy = original_order.side == OrderSide.BUY
 
                 orders_to_cancel_metadata.append((kuru_order_id, price_int, is_buy))
@@ -535,7 +547,9 @@ class KuruClient:
         if use_access_list is None:
             use_access_list = self.order_execution_config.use_access_list
 
-        logger.warning(f"Cancelling all active orders for market {self.user.market_address}")
+        logger.info(
+            f"Cancelling all active orders for market {self.user.market_address}"
+        )
 
         while True:
             # Fetch active orders from API
@@ -553,7 +567,9 @@ class KuruClient:
 
                 if use_access_list:
                     # Include metadata for access list optimization
-                    price = int(order["price"])  # Price already in precision units (from API)
+                    price = int(
+                        order["price"]
+                    )  # Price already in precision units (from API)
                     is_buy = order["isbuy"]  # Boolean from API
                     orders_to_cancel.append((order_id, price, is_buy))
                 else:
@@ -561,15 +577,25 @@ class KuruClient:
                     orders_to_cancel.append(order_id)
 
             # Log message depends on whether access list is used
-            access_list_msg = "with access list" if use_access_list else "without access list"
-            order_ids = [order_id for order_id, _, _ in orders_to_cancel] if use_access_list else orders_to_cancel
+            access_list_msg = (
+                "with access list" if use_access_list else "without access list"
+            )
+            order_ids = (
+                [order_id for order_id, _, _ in orders_to_cancel]
+                if use_access_list
+                else orders_to_cancel
+            )
             logger.info(
                 f"Cancelling {len(orders_to_cancel)} active orders {access_list_msg}: {order_ids}"
             )
 
             # Cancel orders - executor will detect format and handle appropriately
-            txhash = await self.executor.cancel_orders_with_kuru_order_ids(orders_to_cancel)
-            logger.success(f"Cancelled {len(orders_to_cancel)} orders with txhash: {txhash}")
+            txhash = await self.executor.cancel_orders_with_kuru_order_ids(
+                orders_to_cancel
+            )
+            logger.success(
+                f"Cancelled {len(orders_to_cancel)} orders with txhash: {txhash}"
+            )
 
             # Sleep for 3 seconds before checking again
             await asyncio.sleep(3)
@@ -598,11 +624,16 @@ class KuruClient:
         """
         # Validate client is started
         if self._log_processing_task is None or self._log_processing_task.done():
-            raise RuntimeError("Client must be started before subscribing to orderbook. Call start() first.")
+            raise RuntimeError(
+                "Client must be started before subscribing to orderbook. Call start() first."
+            )
 
         # Check if already subscribed
-        if self._orderbook_ws_client is not None and self._orderbook_ws_client.is_connected():
-            logger.warning("Already subscribed to orderbook")
+        if (
+            self._orderbook_ws_client is not None
+            and self._orderbook_ws_client.is_connected()
+        ):
+            logger.debug("Already subscribed to orderbook")
             return
 
         # Create queue if needed
@@ -615,18 +646,19 @@ class KuruClient:
                 ws_url=self.connection_config.kuru_ws_url,
                 market_address=self.market_config.market_address,
                 update_queue=self._orderbook_update_queue,
+                size_precision=self.market_config.size_precision,
                 websocket_config=self.websocket_config,
                 on_error=self._handle_orderbook_error,
             )
 
         # Connect and subscribe (connect() automatically subscribes internally)
-        logger.info(f"Subscribing to orderbook for market {self.market_config.market_address}")
         await self._orderbook_ws_client.connect()
 
         # Start consumer task if callback is set
         if self._orderbook_callback is not None:
-            self._orderbook_consumer_task = asyncio.create_task(self._consume_orderbook_updates())
-            logger.info("Orderbook consumer task started")
+            self._orderbook_consumer_task = asyncio.create_task(
+                self._consume_orderbook_updates()
+            )
 
     async def stop(self, signal_num: Optional[int] = None) -> None:
         """
@@ -655,11 +687,9 @@ class KuruClient:
             try:
                 await asyncio.wait_for(self._log_processing_task, timeout=3.0)
             except asyncio.TimeoutError:
-                logger.warning("Log processing task cancellation timed out after 3s")
+                pass
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
-                logger.debug(f"Error during log processing task cleanup: {e}")
 
         # Cancel order consumer task if running
         if (
@@ -670,11 +700,9 @@ class KuruClient:
             try:
                 await asyncio.wait_for(self._order_consumer_task, timeout=3.0)
             except asyncio.TimeoutError:
-                logger.warning("Order consumer task cancellation timed out after 3s")
+                pass
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
-                logger.debug(f"Error during order consumer task cleanup: {e}")
 
             # Process any remaining orders in queue before shutdown
             if self._order_callback is not None:
@@ -702,14 +730,15 @@ class KuruClient:
             try:
                 await asyncio.wait_for(self._orderbook_consumer_task, timeout=3.0)
             except asyncio.TimeoutError:
-                logger.warning("Orderbook consumer task cancellation timed out after 3s")
+                pass
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
-                logger.debug(f"Error during orderbook consumer task cleanup: {e}")
 
             # Process any remaining orderbook updates in queue before shutdown
-            if self._orderbook_callback is not None and self._orderbook_update_queue is not None:
+            if (
+                self._orderbook_callback is not None
+                and self._orderbook_update_queue is not None
+            ):
                 logger.info("Processing remaining orderbook updates before shutdown...")
                 remaining_count = 0
                 while not self._orderbook_update_queue.empty():
@@ -720,17 +749,21 @@ class KuruClient:
                     except asyncio.QueueEmpty:
                         break
                     except Exception as e:
-                        logger.error(f"Error processing remaining orderbook update: {e}")
+                        logger.error(
+                            f"Error processing remaining orderbook update: {e}"
+                        )
 
                 if remaining_count > 0:
-                    logger.info(f"Processed {remaining_count} remaining orderbook updates")
+                    logger.info(
+                        f"Processed {remaining_count} remaining orderbook updates"
+                    )
 
         # Close orderbook websocket if connected
         if self._orderbook_ws_client is not None:
             try:
                 await self._orderbook_ws_client.close()
-            except Exception as e:
-                logger.debug(f"Error closing orderbook websocket: {e}")
+            except Exception:
+                pass
 
         # Disconnect websocket
         await self.websocket.disconnect()
@@ -738,18 +771,18 @@ class KuruClient:
         # Close all HTTP provider sessions
         try:
             await self.user.close()
-        except Exception as e:
-            logger.debug(f"Error closing user session: {e}")
+        except Exception:
+            pass
 
         try:
             await self.orders_manager.close()
-        except Exception as e:
-            logger.debug(f"Error closing orders_manager session: {e}")
+        except Exception:
+            pass
 
         try:
             await self.executor.close()
-        except Exception as e:
-            logger.debug(f"Error closing executor session: {e}")
+        except Exception:
+            pass
 
         logger.info("Client stopped")
 
@@ -794,13 +827,10 @@ class KuruClient:
         Runs continuously while client is active and callback is set.
         Handles exceptions from user callbacks gracefully.
         """
-        logger.info("Order consumer started")
-
         try:
             while True:
                 # Check for shutdown signal
                 if self._shutdown_event.is_set():
-                    logger.info("Shutdown signal received, stopping order consumer...")
                     break
 
                 # Get order from queue with timeout to check shutdown periodically
@@ -827,12 +857,9 @@ class KuruClient:
                     # Continue processing - don't let one error stop the consumer
 
         except asyncio.CancelledError:
-            logger.debug("Order consumer cancelled")
             raise
         except Exception as e:
             logger.error(f"Fatal error in order consumer: {e}", exc_info=True)
-        finally:
-            logger.info("Order consumer stopped")
 
     async def _consume_orderbook_updates(self) -> None:
         """
@@ -841,13 +868,10 @@ class KuruClient:
         Runs continuously while client is active and callback is set.
         Handles exceptions from user callbacks gracefully.
         """
-        logger.info("Orderbook consumer started")
-
         try:
             while True:
                 # Check for shutdown signal
                 if self._shutdown_event.is_set():
-                    logger.info("Shutdown signal received, stopping orderbook consumer...")
                     break
 
                 # Get update from queue with timeout to check shutdown periodically
@@ -874,12 +898,9 @@ class KuruClient:
                     # Continue processing - don't let one error stop the consumer
 
         except asyncio.CancelledError:
-            logger.debug("Orderbook consumer cancelled")
             raise
         except Exception as e:
             logger.error(f"Fatal error in orderbook consumer: {e}", exc_info=True)
-        finally:
-            logger.info("Orderbook consumer stopped")
 
     def _handle_orderbook_error(self, error: Exception) -> None:
         """Handle errors from orderbook websocket client."""

@@ -16,6 +16,7 @@ class NonceState:
         initialized: Whether nonce has been fetched from RPC at least once.
         lock: Async lock for thread-safe operations on this address's state.
     """
+
     current_nonce: Optional[int] = None
     initialized: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -47,11 +48,7 @@ class NonceManager:
     _states_lock: asyncio.Lock = asyncio.Lock()
 
     @classmethod
-    async def get_and_increment_nonce(
-        cls,
-        w3: AsyncWeb3,
-        address: str
-    ) -> int:
+    async def get_and_increment_nonce(cls, w3: AsyncWeb3, address: str) -> int:
         """Get current nonce and atomically increment for next transaction.
 
         On first call for an address: fetches from RPC using 'latest' block.
@@ -84,7 +81,7 @@ class NonceManager:
             # Initialize from RPC if needed
             if not nonce_state.initialized:
                 logger.debug(f"Fetching initial nonce from RPC for {address}")
-                nonce_from_rpc = await w3.eth.get_transaction_count(address, 'latest')
+                nonce_from_rpc = await w3.eth.get_transaction_count(address, "latest")
                 nonce_state.current_nonce = nonce_from_rpc
                 nonce_state.initialized = True
                 logger.info(f"Initialized nonce for {address}: {nonce_from_rpc}")
@@ -94,8 +91,6 @@ class NonceManager:
 
             # Increment for next transaction
             nonce_state.current_nonce += 1
-
-            logger.debug(f"Allocated nonce {nonce_to_return} for {address}, next nonce will be {nonce_state.current_nonce}")
 
             return nonce_to_return
 
@@ -132,4 +127,6 @@ class NonceManager:
         async with nonce_state.lock:
             nonce_state.initialized = False
             nonce_state.current_nonce = None
-            logger.warning(f"Nonce reset for {address} due to transaction failure, will fetch from RPC on next transaction")
+            logger.warning(
+                f"Nonce reset for {address} due to transaction failure, will fetch from RPC on next transaction"
+            )

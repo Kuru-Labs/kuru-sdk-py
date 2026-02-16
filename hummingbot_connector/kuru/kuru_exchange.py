@@ -49,7 +49,6 @@ from src.configs import (
 )
 from src.feed.orderbook_ws import (
     FrontendOrderbookUpdate,
-    KuruFrontendOrderbookClient,
 )
 from src.manager.order import Order as SdkOrder
 from src.manager.order import OrderSide as SdkOrderSide
@@ -325,12 +324,11 @@ class KuruExchange(ExchangePyBase):
 
     async def _on_sdk_orderbook_event(self, update: FrontendOrderbookUpdate):
         """SDK orderbook callback -> update last traded price + push to queue."""
-        # Extract last traded price from trade events
+        # Extract last traded price from trade events (prices are pre-normalized)
         for event in update.events:
             if event.e == "Trade" and event.p is not None:
-                price = KuruFrontendOrderbookClient.format_websocket_price(event.p)
                 for pair in self._trading_pairs_list:
-                    self._last_traded_prices[pair] = price
+                    self._last_traded_prices[pair] = event.p
 
         await self._sdk_orderbook_queue.put(update)
 

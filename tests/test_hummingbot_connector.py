@@ -400,45 +400,28 @@ class TestOrderbookUpdateConversion:
     """Tests for converting FrontendOrderbookUpdate to orderbook data."""
 
     def test_bids_asks_conversion(self):
-        """FrontendOrderbookUpdate bids/asks should convert correctly."""
-        size_precision = 10_000_000_000
-
+        """FrontendOrderbookUpdate bids/asks are pre-normalized floats."""
         update = FrontendOrderbookUpdate(
             events=[],
             b=[
-                (10_000_000_000_000_000_000, 50_000_000_000),
-                (9_500_000_000_000_000_000, 30_000_000_000),
+                (10.0, 5.0),
+                (9.5, 3.0),
             ],
             a=[
-                (10_500_000_000_000_000_000, 20_000_000_000),
-                (11_000_000_000_000_000_000, 40_000_000_000),
+                (10.5, 2.0),
+                (11.0, 4.0),
             ],
         )
 
-        bids = []
-        for raw_price, raw_size in update.b:
-            price = KuruFrontendOrderbookClient.format_websocket_price(raw_price)
-            size = KuruFrontendOrderbookClient.format_websocket_size(
-                raw_size, size_precision
-            )
-            bids.append([price, size])
+        # Values are already human-readable floats
+        assert len(update.b) == 2
+        assert abs(update.b[0][0] - 10.0) < 1e-10
+        assert abs(update.b[0][1] - 5.0) < 1e-10
+        assert abs(update.b[1][0] - 9.5) < 1e-10
 
-        asks = []
-        for raw_price, raw_size in update.a:
-            price = KuruFrontendOrderbookClient.format_websocket_price(raw_price)
-            size = KuruFrontendOrderbookClient.format_websocket_size(
-                raw_size, size_precision
-            )
-            asks.append([price, size])
-
-        assert len(bids) == 2
-        assert abs(bids[0][0] - 10.0) < 1e-10
-        assert abs(bids[0][1] - 5.0) < 1e-10
-        assert abs(bids[1][0] - 9.5) < 1e-10
-
-        assert len(asks) == 2
-        assert abs(asks[0][0] - 10.5) < 1e-10
-        assert abs(asks[1][0] - 11.0) < 1e-10
+        assert len(update.a) == 2
+        assert abs(update.a[0][0] - 10.5) < 1e-10
+        assert abs(update.a[1][0] - 11.0) < 1e-10
 
     def test_trade_event_extraction(self):
         """Trade events should be identifiable by event type 'Trade'."""
@@ -447,8 +430,8 @@ class TestOrderbookUpdateConversion:
                 e="Trade",
                 ts=1000,
                 mad="0xabc",
-                p=10_000_000_000_000_000_000,
-                s=5_000_000_000,
+                p=10.0,
+                s=0.5,
                 ib=True,
                 t="0xtaker",
                 m="0xmaker",
@@ -457,16 +440,15 @@ class TestOrderbookUpdateConversion:
                 e="OrderCreated",
                 ts=1001,
                 mad="0xabc",
-                p=11_000_000_000_000_000_000,
-                s=3_000_000_000,
+                p=11.0,
+                s=0.3,
                 ib=False,
             ),
         ]
 
         trade_events = [e for e in events if e.e == "Trade"]
         assert len(trade_events) == 1
-        price = KuruFrontendOrderbookClient.format_websocket_price(trade_events[0].p)
-        assert abs(price - 10.0) < 1e-10
+        assert abs(trade_events[0].p - 10.0) < 1e-10
 
     def test_empty_orderbook_update(self):
         """Updates with no bids/asks should be handled gracefully."""
@@ -479,10 +461,10 @@ class TestOrderbookUpdateConversion:
         """Snapshot updates can include events alongside bids/asks."""
         update = FrontendOrderbookUpdate(
             events=[
-                FrontendEvent(e="Trade", ts=1000, mad="0xabc", p=100, s=50),
+                FrontendEvent(e="Trade", ts=1000, mad="0xabc", p=100.0, s=50.0),
             ],
-            b=[(10_000_000_000_000_000_000, 50_000_000_000)],
-            a=[(11_000_000_000_000_000_000, 30_000_000_000)],
+            b=[(10.0, 5.0)],
+            a=[(11.0, 3.0)],
         )
         assert len(update.events) == 1
         assert len(update.b) == 1

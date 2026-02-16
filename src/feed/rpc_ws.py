@@ -108,7 +108,9 @@ class RpcWebsocket:
 
         # Gap recovery config
         self._gap_recovery_block_buffer = websocket_config.gap_recovery_block_buffer
-        self._gap_recovery_max_block_range = websocket_config.gap_recovery_max_block_range
+        self._gap_recovery_max_block_range = (
+            websocket_config.gap_recovery_max_block_range
+        )
 
         # Block tracking for gap recovery
         self._last_seen_block: Optional[int] = None
@@ -268,7 +270,7 @@ class RpcWebsocket:
         elif log_address == self.user_address_lower:
             await self._batch_update_mm_log(log, topic0, txhash)
         elif log_address is not None:
-            logger.warning(f"Log from unknown contract address: {log_address}")
+            logger.debug(f"Log from unknown contract address: {log_address}")
 
     async def process_subscription_logs(self) -> None:
         """
@@ -306,7 +308,9 @@ class RpcWebsocket:
                 while self._connected and not self._closing:
                     # Check shutdown signal if present
                     if self._shutdown_event and self._shutdown_event.is_set():
-                        logger.info("Shutdown signal received, stopping log processor...")
+                        logger.info(
+                            "Shutdown signal received, stopping log processor..."
+                        )
                         return
 
                     try:
@@ -322,14 +326,14 @@ class RpcWebsocket:
                             await self._handle_log(result)
 
                     except asyncio.TimeoutError:
-                        logger.warning(
+                        logger.info(
                             f"No message received in {self._receive_timeout:.0f}s — "
                             "connection may be stale, triggering reconnection"
                         )
                         break
 
                     except StopAsyncIteration:
-                        logger.warning("WebSocket subscription ended")
+                        logger.debug("WebSocket subscription ended")
                         break
 
                     except asyncio.CancelledError:
@@ -356,7 +360,9 @@ class RpcWebsocket:
                         logger.error(f"Error in disconnect callback: {e}")
 
                 if not await self._reconnect():
-                    logger.error("Reconnection permanently failed, log processor stopping")
+                    logger.error(
+                        "Reconnection permanently failed, log processor stopping"
+                    )
                     break
 
         logger.info("Log processor stopped")
@@ -394,9 +400,7 @@ class RpcWebsocket:
             attempts_msg = format_reconnect_attempts(
                 self._reconnect_count, self._max_reconnect_attempts
             )
-            logger.info(
-                f"RPC WS reconnection attempt {attempts_msg} in {delay:.2f}s"
-            )
+            logger.info(f"RPC WS reconnection attempt {attempts_msg} in {delay:.2f}s")
 
             await asyncio.sleep(delay)
 
@@ -494,15 +498,19 @@ class RpcWebsocket:
         total_events = 0
 
         while chunk_start <= end_block:
-            chunk_end = min(chunk_start + self._gap_recovery_max_block_range - 1, end_block)
+            chunk_end = min(
+                chunk_start + self._gap_recovery_max_block_range - 1, end_block
+            )
 
             try:
-                logs = self._http_w3.eth.get_logs({
-                    "fromBlock": chunk_start,
-                    "toBlock": chunk_end,
-                    "address": [self.orderbook_address, self.user_address],
-                    "topics": [topic_hashes],
-                })
+                logs = self._http_w3.eth.get_logs(
+                    {
+                        "fromBlock": chunk_start,
+                        "toBlock": chunk_end,
+                        "address": [self.orderbook_address, self.user_address],
+                        "topics": [topic_hashes],
+                    }
+                )
 
                 for log in logs:
                     # Convert AttributeDict to regular dict for _handle_log
@@ -529,7 +537,6 @@ class RpcWebsocket:
             if args["owner"].lower() != self.user_address_lower:
                 return
 
-            logger.warning(f"OrderCreated event received price: {args['price']}")
             event = OrderCreatedEvent(
                 order_id=args["orderId"],
                 owner=args["owner"],
@@ -580,7 +587,7 @@ class RpcWebsocket:
             await self.orders_manager.on_trade(event)
 
         else:
-            logger.warning(f"Unknown orderbook topic: {topic0}")
+            logger.debug(f"Unknown orderbook topic: {topic0}")
 
     async def _batch_update_mm_log(self, log, topic0: str, txhash: str) -> None:
         """Process logs from MM entrypoint contract."""
@@ -601,11 +608,6 @@ class RpcWebsocket:
                 bytes32_to_string(cloid) if isinstance(cloid, bytes) else cloid
                 for cloid in args["cancelCloids"]
             ]
-
-            logger.debug(f"Buy cloids: {buy_cloids}")
-            logger.debug(f"Sell cloids: {sell_cloids}")
-            logger.debug(f"Cancel cloids: {cancel_cloids}")
-            logger.debug(f"Txhash: {txhash}")
 
             event = BatchUpdateMMEvent(
                 buy_cloids=buy_cloids,

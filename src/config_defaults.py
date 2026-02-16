@@ -16,7 +16,7 @@ Usage:
 # Users can override these via MarketConfig if deploying to a different network
 # or using different contract versions.
 
-DEFAULT_MM_ENTRYPOINT_ADDRESS = "0xA9d8269ad1Bd6e2a02BD8996a338Dc5C16aef440"
+DEFAULT_MM_ENTRYPOINT_ADDRESS = "0xd63aD20884aFA6281969b2BD21A8708Eed546fAC"
 """Default MM Entrypoint contract address for order placement"""
 
 DEFAULT_MARGIN_CONTRACT_ADDRESS = "0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5"

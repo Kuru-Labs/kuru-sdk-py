@@ -10,7 +10,6 @@ from hummingbot.core.data_type.order_book_tracker_data_source import (
 
 from src.feed.orderbook_ws import (
     FrontendOrderbookUpdate,
-    KuruFrontendOrderbookClient,
 )
 
 from hummingbot_connector.kuru.kuru_order_book import KuruOrderBook
@@ -87,30 +86,17 @@ class KuruAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     continue
 
                 trading_pair = self._connector.trading_pairs[0]
-                size_precision = self._connector.size_precision
 
-                # Convert raw WS prices/sizes to floats
+                # Prices and sizes are pre-normalized floats
                 bids = []
                 if update.b:
-                    for raw_price, raw_size in update.b:
-                        price = KuruFrontendOrderbookClient.format_websocket_price(
-                            raw_price
-                        )
-                        size = KuruFrontendOrderbookClient.format_websocket_size(
-                            raw_size, size_precision
-                        )
+                    for price, size in update.b:
                         if size > 0:
                             bids.append([price, size])
 
                 asks = []
                 if update.a:
-                    for raw_price, raw_size in update.a:
-                        price = KuruFrontendOrderbookClient.format_websocket_price(
-                            raw_price
-                        )
-                        size = KuruFrontendOrderbookClient.format_websocket_size(
-                            raw_size, size_precision
-                        )
+                    for price, size in update.a:
                         if size > 0:
                             asks.append([price, size])
 
@@ -171,25 +157,16 @@ class KuruAPIOrderBookDataSource(OrderBookTrackerDataSource):
                 timestamp=time.time(),
             )
 
-        size_precision = self._connector.size_precision
-
+        # Prices and sizes are pre-normalized floats
         bids = []
         if update.b:
-            for raw_price, raw_size in update.b:
-                price = KuruFrontendOrderbookClient.format_websocket_price(raw_price)
-                size = KuruFrontendOrderbookClient.format_websocket_size(
-                    raw_size, size_precision
-                )
+            for price, size in update.b:
                 if size > 0:
                     bids.append([price, size])
 
         asks = []
         if update.a:
-            for raw_price, raw_size in update.a:
-                price = KuruFrontendOrderbookClient.format_websocket_price(raw_price)
-                size = KuruFrontendOrderbookClient.format_websocket_size(
-                    raw_size, size_precision
-                )
+            for price, size in update.a:
                 if size > 0:
                     asks.append([price, size])
 

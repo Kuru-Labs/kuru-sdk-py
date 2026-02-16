@@ -91,15 +91,16 @@ class OrdersManager:
 
         # Verify connection during initialization
         if not await instance.w3.is_connected():
-            raise ConnectionError(f"Failed to connect to RPC at {connection_config.rpc_url}")
+            raise ConnectionError(
+                f"Failed to connect to RPC at {connection_config.rpc_url}"
+            )
 
         instance._connected = True
         logger.info(f"OrdersManager connected to RPC at {connection_config.rpc_url}")
 
         # Initialize async components with cache config
         instance.pending_transactions = AsyncMemCache(
-            ttl=cache_config.pending_tx_ttl,
-            on_expire=instance.on_transaction_timeout
+            ttl=cache_config.pending_tx_ttl, on_expire=instance.on_transaction_timeout
         )
         instance.trade_events_cache = AsyncMemCache(ttl=cache_config.trade_events_ttl)
         instance.processed_orders_queue = asyncio.Queue()
@@ -157,13 +158,13 @@ class OrdersManager:
             try:
                 await self.w3.eth.call(
                     {
-                        'from': tx['from'],
-                        'to': tx['to'],
-                        'data': tx['input'],
-                        'value': tx.get('value', 0),
-                        'gas': tx.get('gas'),
+                        "from": tx["from"],
+                        "to": tx["to"],
+                        "data": tx["input"],
+                        "value": tx.get("value", 0),
+                        "gas": tx.get("gas"),
                     },
-                    receipt['blockNumber'] - 1  # Call at block before tx
+                    receipt["blockNumber"] - 1,  # Call at block before tx
                 )
             except Exception as call_error:
                 # Exception contains revert data
@@ -202,10 +203,6 @@ class OrdersManager:
 
         Compares updated sizes and only caches if the new event has a smaller updated size.
         """
-        logger.warning(
-            f"Order with kuru_order_id {kuru_order_id} not found. Adding trade event to async memory cache."
-        )
-
         # Add the trade event to the async memory cache.
         # If trade already exists, compare the updated size and only add the trade event if the updated size is lesser.
         existing_event = await self.trade_events_cache.get(kuru_order_id)
@@ -215,9 +212,7 @@ class OrdersManager:
             if existing_event.updated_size < trade_event.updated_size:
                 await self.trade_events_cache.set(kuru_order_id, trade_event)
             else:
-                logger.warning(
-                    f"Trade event with updated size {trade_event.updated_size} is greater than existing trade event with updated size {existing_event.updated_size}. Skipping."
-                )
+                pass  # Trade event already cached with better data
 
     def _get_order_by_kuru_id(self, kuru_order_id: int) -> Order | None:
         """Retrieve order from kuru_order_id mapping.
@@ -225,7 +220,7 @@ class OrdersManager:
         Returns None if order not found.
         """
         if kuru_order_id not in self.kuru_order_id_to_cloid:
-            logger.warning(f"Order with kuru_order_id {kuru_order_id} not found")
+            logger.debug(f"Order with kuru_order_id {kuru_order_id} not found")
             return None
 
         cloid = self.kuru_order_id_to_cloid[kuru_order_id]
@@ -245,7 +240,9 @@ class OrdersManager:
         # First check if order exists
         order = self.cloid_to_order.get(cloid)
         if order is None:
-            logger.warning(f"Order with cloid {cloid} not found in cloid_to_order mapping")
+            logger.debug(
+                f"Order with cloid {cloid} not found in cloid_to_order mapping"
+            )
             return None
 
         # Return the kuru_order_id (may be None if order not yet placed)
@@ -275,9 +272,6 @@ class OrdersManager:
             self.txhash_to_orders_created[txhash].sell_orders.append(
                 order_created_event
             )
-        logger.debug(
-            f"Added order {order_created_event.order_id} to txhash {txhash} with log index {order_created_event.log_index}"
-        )
 
     async def on_trade(self, trade_event: TradeEvent) -> None:
         """Callback function to handle trade events."""
@@ -285,20 +279,27 @@ class OrdersManager:
 
         # Check if order exists
         if kuru_order_id not in self.kuru_order_id_to_cloid:
-            logger.warning(f"Order with kuru_order_id {kuru_order_id} not found on receive trade event")
+            logger.debug(
+                f"Order with kuru_order_id {kuru_order_id} not found on receive trade event"
+            )
             await self._cache_trade_event_for_missing_order(kuru_order_id, trade_event)
             return
 
         # Get order
         order = self._get_order_by_kuru_id(kuru_order_id)
         if order is None:
-            logger.warning(
+            logger.debug(
                 f"Order with kuru_order_id {kuru_order_id} not found on receive trade event"
             )
             return
 
         # Update order from trade
         order.update_order_on_trade(trade_event)
+
+        logger.info(
+            f"Order {order.cloid} filled: order_id={kuru_order_id}, "
+            f"filled={trade_event.filled_size}, remaining={trade_event.updated_size}"
+        )
 
         # Finalize update
         await self._finalize_order_update(order)
@@ -308,11 +309,15 @@ class OrdersManager:
         for kuru_order_id in event.order_ids:
             order = self._get_order_by_kuru_id(kuru_order_id)
             if order is None:
-                logger.warning(f"Order with kuru_order_id {kuru_order_id} not found on receive orders cancelled event")
+                logger.debug(
+                    f"Order with kuru_order_id {kuru_order_id} not found on receive orders cancelled event"
+                )
                 continue
 
             # Update status to cancelled
             order.update_status(OrderStatus.ORDER_CANCELLED)
+
+            logger.info(f"Order {order.cloid} cancelled: order_id={kuru_order_id}")
 
             # Finalize update
             await self._finalize_order_update(order)
@@ -334,7 +339,7 @@ class OrdersManager:
         for index, cloid in enumerate(cloids):
             # Validate cloid exists
             if cloid not in self.cloid_to_order:
-                logger.warning(
+                logger.debug(
                     f"Cloid {cloid} (index {index}, {side_name}) not found in "
                     f"cloid_to_order mapping. Skipping."
                 )
@@ -358,14 +363,13 @@ class OrdersManager:
                 # Determine status based on size comparison
                 if order_created_event.size < original_size:
                     order.update_status(OrderStatus.ORDER_PARTIALLY_FILLED)
-                    logger.debug(
-                        f"Order {cloid} ({side_name}) partially filled: "
-                        f"placed={order_created_event.size}, requested={original_size}, "
-                        f"order_id={order_created_event.order_id}"
+                    logger.info(
+                        f"Order {cloid} ({side_name}) placed partially filled: "
+                        f"order_id={order_created_event.order_id}, size={order_created_event.size}/{original_size}"
                     )
                 else:
                     order.update_status(OrderStatus.ORDER_PLACED)
-                    logger.debug(
+                    logger.info(
                         f"Order {cloid} ({side_name}) placed: "
                         f"order_id={order_created_event.order_id}, size={order_created_event.size}"
                     )
@@ -374,10 +378,6 @@ class OrdersManager:
             else:
                 order.update_status(OrderStatus.ORDER_FULLY_FILLED)
                 order.size = 0
-                logger.info(
-                    f"Order {cloid} (index {index}, {side_name}) was immediately "
-                    f"fully filled (no OrderCreatedEvent)"
-                )
 
             # Finalize the update (updates mappings and queues order)
             await self._finalize_order_update(order)
@@ -422,7 +422,9 @@ class OrdersManager:
         orders_created_for_txhash.sell_orders.sort(key=lambda x: x.log_index)
 
         # Process buy orders
-        await self._process_batch_orders(buy_cloids, orders_created_for_txhash.buy_orders, "buy")
+        await self._process_batch_orders(
+            buy_cloids, orders_created_for_txhash.buy_orders, "buy"
+        )
 
         # Process sell orders
         await self._process_batch_orders(
@@ -433,20 +435,22 @@ class OrdersManager:
         for cancel_cloid in cancel_cloids:
             order = self.cloid_to_order.get(cancel_cloid)
             if order is None:
-                logger.warning(f"Cloid {cancel_cloid} not found in cloid_to_order mapping")
+                logger.warning(
+                    f"Cloid {cancel_cloid} not found in cloid_to_order mapping"
+                )
                 continue
 
             if order.status != OrderStatus.ORDER_CANCELLED:
-                logger.warning(f"Cloid {cancel_cloid} is not cancelled, current order status is {order.status}")
+                logger.debug(
+                    f"Cloid {cancel_cloid} is not cancelled, current order status is {order.status}"
+                )
                 continue
 
     async def close(self) -> None:
         """Close the HTTP provider session."""
         try:
-            if hasattr(self.w3.provider, '_session') and self.w3.provider._session:
+            if hasattr(self.w3.provider, "_session") and self.w3.provider._session:
                 await self.w3.provider._session.close()
                 logger.debug("OrdersManager HTTP provider session closed")
         except Exception as e:
             logger.debug(f"Error closing OrdersManager HTTP provider session: {e}")
-
-

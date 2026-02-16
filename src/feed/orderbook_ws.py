@@ -18,7 +18,9 @@ from src.utils.ws_utils import calculate_backoff_delay, format_reconnect_attempt
 # The frontend orderbook WebSocket uses the following format:
 # - Prices: Always in 10^18 format (universal across all markets)
 # - Sizes: In the market's size_precision format (varies by market)
-WEBSOCKET_PRICE_PRECISION = 1_000_000_000_000_000_000  # 10^18 - prices always in wei-like format
+WEBSOCKET_PRICE_PRECISION = (
+    1_000_000_000_000_000_000  # 10^18 - prices always in wei-like format
+)
 
 
 # === DATACLASSES ===
@@ -77,16 +79,15 @@ class SubscriptionResponse:
 class FrontendEvent:
     """Individual orderbook event.
 
-    Note: Prices (p) are in 10^18 format. Sizes (s) are in the market's size_precision format.
-    Use KuruFrontendOrderbookClient.format_websocket_price() and format_websocket_size() to convert.
+    Prices (p) and sizes (s) are pre-normalized to human-readable floats.
     """
 
     e: str  # Event type (e.g., "Trade", "OrderCreated", etc.)
     ts: int  # Timestamp
     mad: str  # Market address
     th: Optional[str] = None  # Transaction hash
-    p: Optional[int] = None  # Price (in 10^18 format - use format_websocket_price())
-    s: Optional[int] = None  # Size (in size_precision format - use format_websocket_size())
+    p: Optional[float] = None  # Price (human-readable float)
+    s: Optional[float] = None  # Size (human-readable float)
     ib: Optional[bool] = None  # Is buy
     t: Optional[str] = None  # Taker address
     m: Optional[str] = None  # Maker address
@@ -96,13 +97,16 @@ class FrontendEvent:
 class FrontendOrderbookUpdate:
     """Incremental orderbook update.
 
-    Note: Prices in bids/asks are in 10^18 format. Sizes are in the market's size_precision format.
-    Use KuruFrontendOrderbookClient.format_websocket_price() and format_websocket_size() to convert.
+    Prices and sizes in bids/asks are pre-normalized to human-readable floats.
     """
 
     events: List[FrontendEvent]
-    b: Optional[List[Tuple[int, int]]] = None  # Bids: [(price_10e18, size_precision), ...]
-    a: Optional[List[Tuple[int, int]]] = None  # Asks: [(price_10e18, size_precision), ...]
+    b: Optional[List[Tuple[float, float]]] = (
+        None  # Bids: [(price, size), ...]
+    )
+    a: Optional[List[Tuple[float, float]]] = (
+        None  # Asks: [(price, size), ...]
+    )
     v: Optional[VaultParams] = None  # Updated vault params
 
 
@@ -134,6 +138,7 @@ class KuruFrontendOrderbookClient:
         ws_url: str,
         market_address: str,
         update_queue: asyncio.Queue[FrontendOrderbookUpdate],
+        size_precision: int = 1,
         websocket_config: Optional[WebSocketConfig] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
     ) -> None:
@@ -144,6 +149,7 @@ class KuruFrontendOrderbookClient:
             ws_url: WebSocket server URL
             market_address: Market contract address
             update_queue: Queue to receive orderbook updates
+            size_precision: Market's size precision divisor for normalizing sizes
             websocket_config: WebSocket behavior configuration.
                             If None, uses default WebSocketConfig()
             on_error: Optional callback for errors
@@ -172,6 +178,7 @@ class KuruFrontendOrderbookClient:
         self._ws_url = ws_url
         self._market_address = market_address.lower()  # Normalize to lowercase
         self._update_queue = update_queue
+        self._size_precision = size_precision
         self._on_error = on_error
 
         # Get reconnection parameters from config
@@ -200,17 +207,13 @@ class KuruFrontendOrderbookClient:
         # Thread safety
         self._lock = asyncio.Lock()
 
-        logger.info(
-            f"Initialized KuruFrontendOrderbookClient for market {self._market_address}"
-        )
-
     @staticmethod
     def format_websocket_price(raw_price: int) -> float:
         """
         Convert WebSocket price to human-readable decimal.
 
-        The frontend orderbook WebSocket always sends prices in 10^18 format,
-        regardless of the market's contract precision.
+        Note: Queue data is now pre-normalized. This method is only needed
+        if you are working with raw WebSocket data outside the client.
 
         Args:
             raw_price: Raw price from WebSocket (in 10^18 format)
@@ -228,8 +231,8 @@ class KuruFrontendOrderbookClient:
         """
         Convert WebSocket size to human-readable decimal.
 
-        The frontend orderbook WebSocket sends sizes in the market's size_precision format.
-        You must provide the size_precision from MarketConfig to convert properly.
+        Note: Queue data is now pre-normalized. This method is only needed
+        if you are working with raw WebSocket data outside the client.
 
         Args:
             raw_size: Raw size from WebSocket (in size_precision format)
@@ -261,7 +264,7 @@ class KuruFrontendOrderbookClient:
         """
         async with self._lock:
             if self._connected:
-                logger.warning("Already connected")
+                logger.debug("Already connected")
                 return
 
             if self._closing:
@@ -321,7 +324,7 @@ class KuruFrontendOrderbookClient:
             raise RuntimeError("Cannot subscribe - not connected")
 
         if self._subscribed:
-            logger.warning("Already subscribed")
+            logger.debug("Already subscribed")
             return
 
         # Build subscription request
@@ -331,11 +334,8 @@ class KuruFrontendOrderbookClient:
             "market": self._market_address,
         }
 
-        logger.info(f"Subscribing to market {self._market_address}")
-
         try:
             await self._websocket.send(json.dumps(request_dict))
-            logger.debug(f"Subscription request sent: {request_dict}")
         except Exception as e:
             logger.error(f"Failed to send subscription request: {e}")
             raise
@@ -393,8 +393,8 @@ class KuruFrontendOrderbookClient:
         if self._websocket:
             try:
                 await self._websocket.close()
-            except Exception as e:
-                logger.warning(f"Error closing websocket: {e}")
+            except Exception:
+                pass
             self._websocket = None
 
         self._connected = False
@@ -413,7 +413,10 @@ class KuruFrontendOrderbookClient:
                 logger.info("Not reconnecting - client is closing")
                 return
 
-            if self._max_reconnect_attempts > 0 and self._reconnect_count >= self._max_reconnect_attempts:
+            if (
+                self._max_reconnect_attempts > 0
+                and self._reconnect_count >= self._max_reconnect_attempts
+            ):
                 error_msg = f"Max reconnection attempts ({self._max_reconnect_attempts}) reached"
                 logger.error(error_msg)
                 await self._invoke_error_callback(ConnectionError(error_msg))
@@ -457,7 +460,7 @@ class KuruFrontendOrderbookClient:
         try:
             while self._connected and not self._closing:
                 if self._websocket is None:
-                    logger.warning("WebSocket is None in message loop")
+                    logger.debug("WebSocket is None in message loop")
                     break
 
                 try:
@@ -473,11 +476,11 @@ class KuruFrontendOrderbookClient:
                     self._handle_message(message)
 
                 except asyncio.TimeoutError:
-                    logger.warning("Message receive timeout - connection may be stale")
+                    logger.info("Message receive timeout - connection may be stale")
                     break
 
                 except websockets.exceptions.ConnectionClosed as e:
-                    logger.warning(f"WebSocket connection closed: {e}")
+                    logger.info(f"WebSocket connection closed: {e}")
                     break
 
                 except Exception as e:
@@ -486,14 +489,11 @@ class KuruFrontendOrderbookClient:
                     # Continue loop - don't break on parse errors
 
         except asyncio.CancelledError:
-            logger.debug("Message loop cancelled")
+            pass
 
         except Exception as e:
             logger.error(f"Fatal error in message loop: {e}")
             await self._invoke_error_callback(e)
-
-        finally:
-            logger.info("Message loop ended")
 
             # If we exited due to connection issue (not intentional close), reconnect
             if not self._closing:
@@ -522,7 +522,6 @@ class KuruFrontendOrderbookClient:
                 # Initial snapshot or update with full orderbook
                 # Check if this is first snapshot
                 if not self._initial_snapshot_received:
-                    logger.info("Received initial orderbook snapshot")
                     self._initial_snapshot_received = True
                     asyncio.create_task(self._handle_initial_snapshot(data))
                 else:
@@ -534,7 +533,7 @@ class KuruFrontendOrderbookClient:
                 asyncio.create_task(self._handle_orderbook_update(data))
 
             else:
-                logger.warning(
+                logger.debug(
                     f"Unknown message type: {msg_type}, data keys: {list(data.keys())}"
                 )
 
@@ -563,22 +562,15 @@ class KuruFrontendOrderbookClient:
                 data=data.get("data"),
             )
 
-            logger.info(
-                f"Subscription response: status={response.status}, message={response.message}"
-            )
-
             if response.status == "success":
                 self._subscribed = True
 
                 # If initial data provided, process it as snapshot
                 if response.data:
-                    logger.info(
-                        "Processing initial orderbook snapshot from subscription response"
-                    )
                     asyncio.create_task(self._handle_initial_snapshot(response.data))
 
             elif response.status == "pending":
-                logger.info("Subscription pending")
+                pass  # Wait for subsequent message
 
             else:
                 error_msg = f"Subscription failed: {response.message}"
@@ -597,13 +589,19 @@ class KuruFrontendOrderbookClient:
             data: FrontendOrderbookData dict
         """
         try:
-            # Parse bids and asks
+            # Parse bids and asks, normalizing to human-readable floats
             bids = [
-                (self._parse_big_int(bid[0]), self._parse_big_int(bid[1]))
+                (
+                    self._parse_big_int(bid[0]) / WEBSOCKET_PRICE_PRECISION,
+                    self._parse_big_int(bid[1]) / self._size_precision,
+                )
                 for bid in data.get("b", [])
             ]
             asks = [
-                (self._parse_big_int(ask[0]), self._parse_big_int(ask[1]))
+                (
+                    self._parse_big_int(ask[0]) / WEBSOCKET_PRICE_PRECISION,
+                    self._parse_big_int(ask[1]) / self._size_precision,
+                )
                 for ask in data.get("a", [])
             ]
 
@@ -641,18 +639,24 @@ class KuruFrontendOrderbookClient:
                 for event_data in data["events"]:
                     events.append(self._parse_frontend_event(event_data))
 
-            # Parse optional fields
+            # Parse optional fields, normalizing to human-readable floats
             bids = None
             if "b" in data and data["b"]:
                 bids = [
-                    (self._parse_big_int(bid[0]), self._parse_big_int(bid[1]))
+                    (
+                        self._parse_big_int(bid[0]) / WEBSOCKET_PRICE_PRECISION,
+                        self._parse_big_int(bid[1]) / self._size_precision,
+                    )
                     for bid in data["b"]
                 ]
 
             asks = None
             if "a" in data and data["a"]:
                 asks = [
-                    (self._parse_big_int(ask[0]), self._parse_big_int(ask[1]))
+                    (
+                        self._parse_big_int(ask[0]) / WEBSOCKET_PRICE_PRECISION,
+                        self._parse_big_int(ask[1]) / self._size_precision,
+                    )
                     for ask in data["a"]
                 ]
 
@@ -706,7 +710,7 @@ class KuruFrontendOrderbookClient:
                 value_stripped = value.strip()
 
                 # Check if it's a hexadecimal string (starts with '0x')
-                if value_stripped.startswith('0x') or value_stripped.startswith('0X'):
+                if value_stripped.startswith("0x") or value_stripped.startswith("0X"):
                     return int(value_stripped, 16)
                 else:
                     # Parse as decimal
@@ -738,7 +742,9 @@ class KuruFrontendOrderbookClient:
             base_asset=data.get("base_asset", ""),
             base_asset_decimals=self._parse_big_int(data.get("base_asset_decimals", 0)),
             quote_asset=data.get("quote_asset", ""),
-            quote_asset_decimals=self._parse_big_int(data.get("quote_asset_decimals", 0)),
+            quote_asset_decimals=self._parse_big_int(
+                data.get("quote_asset_decimals", 0)
+            ),
             tick_size=self._parse_big_int(data.get("tick_size", 0)),
             min_size=self._parse_big_int(data.get("min_size", 0)),
             max_size=self._parse_big_int(data.get("max_size", 0)),
@@ -790,12 +796,12 @@ class KuruFrontendOrderbookClient:
             mad=data["mad"],  # Required
             th=data.get("th"),
             p=(
-                self._parse_big_int(data["p"])
+                self._parse_big_int(data["p"]) / WEBSOCKET_PRICE_PRECISION
                 if "p" in data and data["p"] is not None
                 else None
             ),
             s=(
-                self._parse_big_int(data["s"])
+                self._parse_big_int(data["s"]) / self._size_precision
                 if "s" in data and data["s"] is not None
                 else None
             ),
@@ -818,7 +824,6 @@ class KuruFrontendOrderbookClient:
 
                 # Check if websocket is still open
                 if self._websocket is None:
-                    logger.warning("WebSocket is None in heartbeat monitor")
                     asyncio.create_task(self._handle_connection_loss())
                     break
 
@@ -827,7 +832,6 @@ class KuruFrontendOrderbookClient:
                 # We just need to catch it in the message loop
 
             except asyncio.CancelledError:
-                logger.debug("Heartbeat monitor cancelled")
                 break
             except Exception as e:
                 logger.error(f"Heartbeat monitor error: {e}")
@@ -846,8 +850,6 @@ class KuruFrontendOrderbookClient:
         """
         if self._closing:
             return
-
-        logger.warning("Connection loss detected")
 
         async with self._lock:
             self._connected = False

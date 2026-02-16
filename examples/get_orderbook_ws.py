@@ -45,46 +45,13 @@ from src.configs import market_config_from_market_address, MarketConfig
 # === HELPER FUNCTIONS ===
 
 
-def format_price(raw_price: int) -> str:
-    """
-    Convert WebSocket price to human-readable decimal string.
-
-    WebSocket always sends prices in 10^18 format.
-
-    Args:
-        raw_price: Raw price from WebSocket (10^18 format)
-
-    Returns:
-        Formatted price string
-    """
-    price = KuruFrontendOrderbookClient.format_websocket_price(raw_price)
-    return f"{price:.8f}"  # 8 decimal places for price display
-
-
-def format_size(raw_size: int, size_precision: int) -> str:
-    """
-    Convert WebSocket size to human-readable decimal string.
-
-    WebSocket sends sizes in the market's size_precision format.
-
-    Args:
-        raw_size: Raw size from WebSocket (in size_precision format)
-        size_precision: Size precision from MarketConfig
-
-    Returns:
-        Formatted size string
-    """
-    size = KuruFrontendOrderbookClient.format_websocket_size(raw_size, size_precision)
-    return f"{size:.8f}"  # 8 decimal places for size display
-
-
 def format_event(event: FrontendEvent, market_config: MarketConfig) -> str:
     """
     Format a frontend event for display.
 
     Args:
         event: FrontendEvent to format
-        market_config: MarketConfig for size precision
+        market_config: MarketConfig for context
 
     Returns:
         Formatted event string
@@ -93,22 +60,22 @@ def format_event(event: FrontendEvent, market_config: MarketConfig) -> str:
 
     # Format based on event type
     if event_type == "Trade":
-        price_str = format_price(event.p) if event.p is not None else "N/A"
-        size_str = format_size(event.s, market_config.size_precision) if event.s is not None else "N/A"
+        price_str = f"{event.p:.8f}" if event.p is not None else "N/A"
+        size_str = f"{event.s:.8f}" if event.s is not None else "N/A"
         side = "Buy" if event.ib else "Sell"
         taker = event.t[:8] + "..." if event.t else "N/A"
         maker = event.m[:8] + "..." if event.m else "N/A"
         return f"  [Trade] {price_str} @ {size_str} | {side} | Taker: {taker} | Maker: {maker}"
 
     elif event_type == "OrderCreated":
-        price_str = format_price(event.p) if event.p is not None else "N/A"
-        size_str = format_size(event.s, market_config.size_precision) if event.s is not None else "N/A"
+        price_str = f"{event.p:.8f}" if event.p is not None else "N/A"
+        size_str = f"{event.s:.8f}" if event.s is not None else "N/A"
         side = "Buy" if event.ib else "Sell"
         return f"  [OrderCreated] {price_str} @ {size_str} | {side}"
 
     elif event_type == "OrderCanceled":
-        price_str = format_price(event.p) if event.p is not None else "N/A"
-        size_str = format_size(event.s, market_config.size_precision) if event.s is not None else "N/A"
+        price_str = f"{event.p:.8f}" if event.p is not None else "N/A"
+        size_str = f"{event.s:.8f}" if event.s is not None else "N/A"
         side = "Buy" if event.ib else "Sell"
         return f"  [OrderCanceled] {price_str} @ {size_str} | {side}"
 
@@ -118,15 +85,15 @@ def format_event(event: FrontendEvent, market_config: MarketConfig) -> str:
 
 
 def calculate_spread(
-    bids: Optional[List[Tuple[int, int]]],
-    asks: Optional[List[Tuple[int, int]]]
+    bids: Optional[List[Tuple[float, float]]],
+    asks: Optional[List[Tuple[float, float]]]
 ) -> Tuple[Optional[float], Optional[float]]:
     """
     Calculate orderbook spread.
 
     Args:
-        bids: List of (price_10e18, size) tuples
-        asks: List of (price_10e18, size) tuples
+        bids: List of (price, size) tuples
+        asks: List of (price, size) tuples
 
     Returns:
         Tuple of (spread_amount, spread_percentage) or (None, None) if unable to calculate
@@ -134,9 +101,8 @@ def calculate_spread(
     if not bids or not asks or len(bids) == 0 or len(asks) == 0:
         return None, None
 
-    # Convert from 10^18 format
-    best_bid = KuruFrontendOrderbookClient.format_websocket_price(bids[0][0])
-    best_ask = KuruFrontendOrderbookClient.format_websocket_price(asks[0][0])
+    best_bid = bids[0][0]
+    best_ask = asks[0][0]
 
     # Calculate spread
     spread = best_ask - best_bid
@@ -183,10 +149,8 @@ def print_orderbook_update(update: FrontendOrderbookUpdate, market_config: Marke
             print("\nASKS (Selling) - Top 5:")
             print(f"  {'Price':<15} | {'Size':<15}")
             print(f"  {'-' * 15}-+-{'-' * 15}")
-            for price_raw, size_raw in update.a[:5]:
-                price_str = format_price(price_raw)
-                size_str = format_size(size_raw, market_config.size_precision)
-                print(f"  {price_str:<15} | {size_str:<15}")
+            for price, size in update.a[:5]:
+                print(f"  {price:<15.8f} | {size:<15.8f}")
         else:
             print("\nASKS (Selling): No asks")
 
@@ -195,15 +159,13 @@ def print_orderbook_update(update: FrontendOrderbookUpdate, market_config: Marke
             print("\nBIDS (Buying) - Top 5:")
             print(f"  {'Price':<15} | {'Size':<15}")
             print(f"  {'-' * 15}-+-{'-' * 15}")
-            for price_raw, size_raw in update.b[:5]:
-                price_str = format_price(price_raw)
-                size_str = format_size(size_raw, market_config.size_precision)
-                print(f"  {price_str:<15} | {size_str:<15}")
+            for price, size in update.b[:5]:
+                print(f"  {price:<15.8f} | {size:<15.8f}")
         else:
             print("\nBIDS (Buying): No bids")
 
         # Calculate and print spread
-        spread, spread_pct = calculate_spread(update.b, update.a)  # No precision param
+        spread, spread_pct = calculate_spread(update.b, update.a)
         if spread is not None:
             print(f"\nSpread: {spread:.8f} ({spread_pct:.4f}%)")
         else:
@@ -266,6 +228,7 @@ async def main():
         ws_url="wss://ws.kuru.io/",
         market_address=market_address,
         update_queue=update_queue,
+        size_precision=market_config.size_precision,
         on_error=on_error,
         max_reconnect_attempts=5,
         reconnect_delay=1.0,
@@ -284,7 +247,7 @@ async def main():
                 update = await update_queue.get()
 
                 update_count += 1
-                logger.info(f"📊 Received update #{update_count} with {len(update.events)} events")
+                logger.info(f"Received update #{update_count} with {len(update.events)} events")
 
                 # Format and print the update
                 print_orderbook_update(update, market_config)

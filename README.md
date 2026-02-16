@@ -134,18 +134,15 @@ best_ask: float | None = None
 async def on_orderbook(update: FrontendOrderbookUpdate) -> None:
     global best_bid, best_ask
     if update.b:
-        best_bid = KuruFrontendOrderbookClient.format_websocket_price(update.b[0][0])
+        best_bid = update.b[0][0]
     if update.a:
-        best_ask = KuruFrontendOrderbookClient.format_websocket_price(update.a[0][0])
+        best_ask = update.a[0][0]
 
 client.set_orderbook_callback(on_orderbook)
 await client.subscribe_to_orderbook()
 ```
 
-**WebSocket price/size units:** The frontend orderbook WebSocket sends prices in `10^18` format (regardless of market precision) and sizes in the market's `size_precision` format. Use:
-
-- `KuruFrontendOrderbookClient.format_websocket_price(raw_price_1e18) -> float`
-- `KuruFrontendOrderbookClient.format_websocket_size(raw_size, market_config.size_precision) -> float`
+**WebSocket price/size units:** Prices and sizes in `FrontendOrderbookUpdate` are pre-normalized to human-readable floats. No manual conversion is needed.
 
 ### Step 5 - Cancel and place quotes
 
@@ -264,6 +261,120 @@ orders = [
 txhash = await client.place_orders(orders, post_only=True)
 ```
 
+## WebSocket Feeds
+
+The SDK provides two standalone WebSocket clients for real-time orderbook data. Both can be used independently of `KuruClient` — no wallet or private key required.
+
+### `KuruFrontendOrderbookClient` (orderbook_ws)
+
+Connects to Kuru's frontend orderbook WebSocket. Delivers a **full L2 snapshot** on connect, then incremental updates with events (trades, order placements, cancellations).
+
+- Prices and sizes are pre-normalized to human-readable floats.
+- Each update may contain `b` (bids) and `a` (asks) with all current levels at that price, plus an `events` list describing what changed.
+
+```python
+import asyncio
+from src.configs import ConfigManager
+from src.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
+
+market_config = ConfigManager.load_market_config(market_address="0x...", fetch_from_chain=True)
+connection_config = ConfigManager.load_connection_config()
+
+update_queue: asyncio.Queue[FrontendOrderbookUpdate] = asyncio.Queue()
+
+client = KuruFrontendOrderbookClient(
+    ws_url=connection_config.kuru_ws_url,
+    market_address=market_config.market_address,
+    update_queue=update_queue,
+    size_precision=market_config.size_precision,
+)
+
+async with client:
+    while True:
+        update = await update_queue.get()
+
+        if update.b:
+            best_bid = update.b[0][0]  # Already a float
+        if update.a:
+            best_ask = update.a[0][0]  # Already a float
+```
+
+You can also subscribe via `KuruClient` instead of using the client directly:
+
+```python
+client.set_orderbook_callback(on_orderbook)
+await client.subscribe_to_orderbook()
+```
+
+---
+
+### `ExchangeWebsocketClient` (exchange_ws)
+
+Connects to the exchange WebSocket in **Binance-compatible format**. Delivers incremental depth updates (`depthUpdate`) and optionally Monad-enhanced updates with blockchain state (`monadDepthUpdate`).
+
+- Messages are binary (JSON serialized to bytes).
+- Prices and sizes are pre-normalized to human-readable floats.
+- `MonadDepthUpdate` includes `blockNumber`, `blockId`, and `state` (`"proposed"` | `"committed"` | `"finalized"`).
+
+**Key difference from `orderbook_ws`:** The exchange WebSocket sends **incremental delta updates only** — `b` and `a` contain only the price levels that changed, not the full book. A size of `0.0` means that level was removed. You must maintain a local orderbook and apply each delta.
+
+```python
+import asyncio
+from src.configs import ConfigManager
+from src.feed.exchange_ws import ExchangeWebsocketClient, DepthUpdate, MonadDepthUpdate
+
+market_config = ConfigManager.load_market_config(market_address="0x...", fetch_from_chain=True)
+connection_config = ConfigManager.load_connection_config()
+
+update_queue = asyncio.Queue()
+
+client = ExchangeWebsocketClient(
+    ws_url=connection_config.exchange_ws_url,
+    market_config=market_config,
+    update_queue=update_queue,
+)
+
+# Local orderbook — must be seeded and maintained manually
+orderbook = {"bids": {}, "asks": {}}
+
+async with client:
+    while True:
+        update = await update_queue.get()
+
+        # Apply bid deltas (prices and sizes are pre-normalized floats)
+        for price, size in update.b:
+            if size == 0.0:
+                orderbook["bids"].pop(price, None)  # Level removed
+            else:
+                orderbook["bids"][price] = size     # Level added or updated
+
+        # Apply ask deltas
+        for price, size in update.a:
+            if size == 0.0:
+                orderbook["asks"].pop(price, None)  # Level removed
+            else:
+                orderbook["asks"][price] = size     # Level added or updated
+
+        # For MonadDepthUpdate, blockchain state is also available:
+        if isinstance(update, MonadDepthUpdate):
+            print(f"Block {update.blockNumber} ({update.state})")
+```
+
+---
+
+### Choosing between the two
+
+| | `KuruFrontendOrderbookClient` | `ExchangeWebsocketClient` |
+|---|---|---|
+| Initial snapshot | Full L2 book on connect | None (delta-only) |
+| Update style | Full levels at changed prices + events | Incremental deltas |
+| Local book required | No | Yes |
+| Event detail (trades, orders) | Yes (`events` field) | No |
+| Blockchain state | No | Yes (monad variant) |
+| Message format | Text JSON | Binary JSON |
+
+---
+
 ## Configuration
 
 The SDK uses `ConfigManager` to load configuration from environment variables with sensible defaults. See the [Environment Variables](#installation) section above for the full list.
@@ -314,8 +425,11 @@ Batch cancel/replace every second is expensive on-chain. Common approaches:
 # End-to-end market making bot (requires PRIVATE_KEY + MARKET_ADDRESS)
 PYTHONPATH=. uv run python examples/simple_market_making_bot.py
 
-# Read-only orderbook stream (no wallet required)
+# Read-only frontend orderbook stream (full snapshots, no wallet required)
 PYTHONPATH=. uv run python examples/get_orderbook_ws.py
+
+# Read-only exchange orderbook stream (Binance-compatible delta updates, no wallet required)
+PYTHONPATH=. uv run python examples/get_exchange_orderbook_ws.py
 
 # Repeated batch placement + cancels
 PYTHONPATH=. uv run python examples/place_many_orders.py

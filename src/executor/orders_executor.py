@@ -15,7 +15,10 @@ from src.configs import (
 from src.manager.order import Order, OrderType, OrderStatus, OrderSide
 from src.utils import load_abi
 from src.transaction.transaction import AsyncTransactionSenderMixin
-from src.transaction.access_list import build_access_list_for_cancel_only, build_access_list_for_cancel_and_place
+from src.transaction.access_list import (
+    build_access_list_for_cancel_only,
+    build_access_list_for_cancel_and_place,
+)
 
 
 def round_price_down(price_int: int, tick_size: int) -> int:
@@ -63,7 +66,9 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         self.order_execution_config = order_execution_config
 
         # Extract commonly used values from configs
-        self.mm_entrypoint_address = Web3.to_checksum_address(market_config.mm_entrypoint_address)
+        self.mm_entrypoint_address = Web3.to_checksum_address(
+            market_config.mm_entrypoint_address
+        )
         self.order_book_address = Web3.to_checksum_address(market_config.market_address)
         self.user_address = Web3.to_checksum_address(wallet_config.user_address)
 
@@ -199,23 +204,41 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
 
         # Convert float prices/sizes to integers using precision multipliers
         # Using int() for truncation (round down)
-        buy_prices_int = [int(price * self.market_config.price_precision) for price in buy_prices]
-        buy_sizes_int = [int(size * self.market_config.size_precision) for size in buy_sizes]
-        sell_prices_int = [int(price * self.market_config.price_precision) for price in sell_prices]
-        sell_sizes_int = [int(size * self.market_config.size_precision) for size in sell_sizes]
+        buy_prices_int = [
+            int(price * self.market_config.price_precision) for price in buy_prices
+        ]
+        buy_sizes_int = [
+            int(size * self.market_config.size_precision) for size in buy_sizes
+        ]
+        sell_prices_int = [
+            int(price * self.market_config.price_precision) for price in sell_prices
+        ]
+        sell_sizes_int = [
+            int(size * self.market_config.size_precision) for size in sell_sizes
+        ]
 
         # Apply tick-size rounding to prices
         tick_size = self.market_config.tick_size
         if price_rounding != "none" and tick_size > 1:
             if price_rounding == "default":
-                buy_prices_int = [round_price_down(p, tick_size) for p in buy_prices_int]
-                sell_prices_int = [round_price_up(p, tick_size) for p in sell_prices_int]
+                buy_prices_int = [
+                    round_price_down(p, tick_size) for p in buy_prices_int
+                ]
+                sell_prices_int = [
+                    round_price_up(p, tick_size) for p in sell_prices_int
+                ]
             elif price_rounding == "down":
-                buy_prices_int = [round_price_down(p, tick_size) for p in buy_prices_int]
-                sell_prices_int = [round_price_down(p, tick_size) for p in sell_prices_int]
+                buy_prices_int = [
+                    round_price_down(p, tick_size) for p in buy_prices_int
+                ]
+                sell_prices_int = [
+                    round_price_down(p, tick_size) for p in sell_prices_int
+                ]
             elif price_rounding == "up":
                 buy_prices_int = [round_price_up(p, tick_size) for p in buy_prices_int]
-                sell_prices_int = [round_price_up(p, tick_size) for p in sell_prices_int]
+                sell_prices_int = [
+                    round_price_up(p, tick_size) for p in sell_prices_int
+                ]
 
         # Log the operation
         logger.info(
@@ -225,35 +248,28 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
             f"{len(order_ids_to_cancel)} cancels, post_only={post_only}"
         )
 
-        logger.debug(f"Buy cloids: {buy_cloids}")
-        logger.debug(f"Sell cloids: {sell_cloids}")
-        logger.debug(f"Cancel cloids: {cancel_cloids}")
-        logger.debug(f"Buy prices: {buy_prices_int}")
-        logger.debug(f"Buy sizes: {buy_sizes_int}")
-        logger.debug(f"Sell prices: {sell_prices_int}")
-        logger.debug(f"Sell sizes: {sell_sizes_int}")
-        logger.debug(f"Order ids to cancel: {order_ids_to_cancel}")
-        logger.debug(f"Post only: {post_only}")
-
-
         # Call batchUpdateMM function
         function_call = self.contract.functions.batchUpdateMM(
-            self.order_book_address,
-            buy_cloids,
-            sell_cloids,
-            cancel_cloids,
-            buy_prices_int,
-            buy_sizes_int,
-            sell_prices_int,
-            sell_sizes_int,
-            order_ids_to_cancel,
-            post_only,
+            {
+                "orderBook": self.order_book_address,
+                "buyCloids": buy_cloids,
+                "sellCloids": sell_cloids,
+                "cancelCloids": cancel_cloids,
+                "buyPrices": buy_prices_int,
+                "buySizes": buy_sizes_int,
+                "sellPrices": sell_prices_int,
+                "sellSizes": sell_sizes_int,
+                "orderIdsToCancel": order_ids_to_cancel,
+                "postOnly": post_only,
+            }
         )
 
         # Build access list if we have any operations
         access_list = None
         if buy_prices or sell_prices or order_ids_to_cancel:
-            from src.transaction.access_list import build_access_list_for_cancel_and_place
+            from src.transaction.access_list import (
+                build_access_list_for_cancel_and_place,
+            )
 
             # Prepare buy/sell orders as (price, size) tuples
             buy_orders_for_access_list = list(zip(buy_prices_int, buy_sizes_int))
@@ -296,8 +312,6 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         Returns:
             Transaction hash as hex string
         """
-        logger.success(f"Using account: {self.account.address}")
-
         # Determine if we have metadata for access list
         has_metadata = len(kuru_order_ids) > 0 and isinstance(kuru_order_ids[0], tuple)
 
@@ -310,12 +324,13 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
             orders_to_cancel_metadata = []
 
         # Build contract function call
-        function_call = self.orderbook_contract.functions.batchUpdate([], [], [], [], order_ids, False)
+        function_call = self.orderbook_contract.functions.batchUpdate(
+            [], [], [], [], order_ids, False
+        )
 
         # Build access list if we have metadata
         access_list = None
         if has_metadata:
-
             access_list = build_access_list_for_cancel_only(
                 user_address=self.user_address,
                 orderbook_address=self.order_book_address,
@@ -327,13 +342,6 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
                 orders_to_cancel=orders_to_cancel_metadata,
             )
             logger.debug(f"Built access list for {len(order_ids)} order cancellations")
-        else:
-            logger.warning(
-                "Canceling orders without access list - consider passing order metadata "
-                "(order_id, price, is_buy) tuples for gas savings"
-            )
-
-        logger.success(f"Sending transaction with access list: {access_list}")
 
         # Send transaction (with or without access list)
         txhash = await self._send_transaction(function_call, access_list=access_list)
@@ -371,8 +379,12 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
             - min_amount_out uses 10^base_token_decimals
         """
         # Convert float amounts to integers using token decimals
-        quote_amount_int = int(quote_amount * (10 ** self.market_config.quote_token_decimals))
-        min_amount_out_int = int(min_amount_out * (10 ** self.market_config.base_token_decimals))
+        quote_amount_int = int(
+            quote_amount * (10**self.market_config.quote_token_decimals)
+        )
+        min_amount_out_int = int(
+            min_amount_out * (10**self.market_config.base_token_decimals)
+        )
 
         # Log the operation
         logger.info(
@@ -422,7 +434,9 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         """
         # Convert float amounts to integers
         size_int = int(size * self.market_config.size_precision)
-        min_amount_out_int = int(min_amount_out * (10 ** self.market_config.quote_token_decimals))
+        min_amount_out_int = int(
+            min_amount_out * (10**self.market_config.quote_token_decimals)
+        )
 
         # Log the operation
         logger.info(
@@ -446,7 +460,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
     async def close(self) -> None:
         """Close the HTTP provider session."""
         try:
-            if hasattr(self.w3.provider, '_session') and self.w3.provider._session:
+            if hasattr(self.w3.provider, "_session") and self.w3.provider._session:
                 await self.w3.provider._session.close()
                 logger.debug("OrdersExecutor HTTP provider session closed")
         except Exception as e:

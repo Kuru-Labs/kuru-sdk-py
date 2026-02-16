@@ -7,7 +7,7 @@ import websockets.asyncio.client
 import websockets.exceptions
 from loguru import logger
 
-from src.configs import WebSocketConfig
+from src.configs import MarketConfig, WebSocketConfig
 from src.utils.ws_utils import calculate_backoff_delay, format_reconnect_attempts
 
 
@@ -19,14 +19,16 @@ class DepthUpdate:
     """
     Standard Binance-compatible depth update.
 
+    Prices and sizes are pre-normalized to human-readable floats.
+
     Attributes:
         e: Event type ("depthUpdate")
         E: Event time (milliseconds since epoch)
         s: Symbol (market address)
         U: First update ID in event
         u: Final update ID in event
-        b: Bids as list of [price, size] pairs (U256 strings)
-        a: Asks as list of [price, size] pairs (U256 strings)
+        b: Bids as list of (price, size) float pairs
+        a: Asks as list of (price, size) float pairs
     """
 
     e: str  # Event type: "depthUpdate"
@@ -34,8 +36,8 @@ class DepthUpdate:
     s: str  # Symbol (market address)
     U: int  # First update ID
     u: int  # Final update ID
-    b: List[Tuple[str, str]]  # Bids: [(price, size), ...]
-    a: List[Tuple[str, str]]  # Asks: [(price, size), ...]
+    b: List[Tuple[float, float]]  # Bids: [(price, size), ...]
+    a: List[Tuple[float, float]]  # Asks: [(price, size), ...]
 
 
 @dataclass
@@ -43,8 +45,7 @@ class MonadDepthUpdate:
     """
     Monad-enhanced depth update with blockchain state.
 
-    Extends the standard depth update with Monad-specific state tracking,
-    including block number, block hash, and commitment state.
+    Prices and sizes are pre-normalized to human-readable floats.
 
     Attributes:
         e: Event type ("monadDepthUpdate")
@@ -55,8 +56,8 @@ class MonadDepthUpdate:
         blockId: Block hash (hex string with 0x prefix)
         U: First update ID in event
         u: Final update ID in event
-        b: Bids as list of [price, size] pairs (U256 strings)
-        a: Asks as list of [price, size] pairs (U256 strings)
+        b: Bids as list of (price, size) float pairs
+        a: Asks as list of (price, size) float pairs
     """
 
     e: str  # Event type: "monadDepthUpdate"
@@ -67,8 +68,8 @@ class MonadDepthUpdate:
     blockId: str  # Block hash
     U: int
     u: int
-    b: List[Tuple[str, str]]
-    a: List[Tuple[str, str]]
+    b: List[Tuple[float, float]]
+    a: List[Tuple[float, float]]
 
 
 # === MAIN CLIENT CLASS ===
@@ -95,7 +96,7 @@ class ExchangeWebsocketClient:
 
     Args:
         ws_url: Exchange WebSocket server URL (ws:// or wss://)
-        market_address: Market contract address
+        market_config: MarketConfig containing market address and size precision
         update_queue: asyncio.Queue to receive depth updates
         websocket_config: WebSocket behavior configuration
         on_error: Optional callback for errors (sync or async)
@@ -105,7 +106,7 @@ class ExchangeWebsocketClient:
         update_queue = asyncio.Queue()
         client = ExchangeWebsocketClient(
             ws_url="wss://exchange.kuru.io/",
-            market_address="0x065C9d28E428A0db40191a54d33d5b7c71a9C394",
+            market_config=market_config,
             update_queue=update_queue,
         )
 
@@ -121,7 +122,7 @@ class ExchangeWebsocketClient:
     def __init__(
         self,
         ws_url: str,
-        market_address: str,
+        market_config: MarketConfig,
         update_queue: asyncio.Queue[Union[DepthUpdate, MonadDepthUpdate]],
         websocket_config: Optional[WebSocketConfig] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
@@ -131,7 +132,7 @@ class ExchangeWebsocketClient:
 
         Args:
             ws_url: Exchange WebSocket server URL
-            market_address: Market contract address
+            market_config: MarketConfig containing market address and size precision
             update_queue: Queue to receive orderbook updates
             websocket_config: WebSocket behavior configuration.
                             If None, uses default WebSocketConfig()
@@ -146,20 +147,21 @@ class ExchangeWebsocketClient:
 
         # Store config
         self.websocket_config = websocket_config
+        self._market_config = market_config
 
         # Validation
         if not ws_url:
             raise ValueError("ws_url cannot be empty")
         if not ws_url.startswith(("ws://", "wss://")):
             raise ValueError("ws_url must start with ws:// or wss://")
-        if not market_address:
+        if not market_config.market_address:
             raise ValueError("market_address cannot be empty")
         if not isinstance(update_queue, asyncio.Queue):
             raise ValueError("update_queue must be an asyncio.Queue")
 
         # Connection parameters
         self._ws_url = ws_url
-        self._market_address = market_address.lower()  # Normalize to lowercase
+        self._market_address = market_config.market_address.lower()  # Normalize to lowercase
         self._update_queue = update_queue
         self._on_error = on_error
 
@@ -197,7 +199,8 @@ class ExchangeWebsocketClient:
         """
         Convert U256 price string to human-readable decimal.
 
-        The exchange WebSocket sends prices as U256 strings scaled to 10^18.
+        Note: Queue data is now pre-normalized. This method is only needed
+        if you are working with raw WebSocket data outside the client.
 
         Args:
             price_str: Price as U256 string (e.g., "241470000000000000000")
@@ -212,23 +215,25 @@ class ExchangeWebsocketClient:
         return int(price_str) / 1_000_000_000_000_000_000
 
     @staticmethod
-    def format_size(size_str: str) -> float:
+    def format_size(size_str: str, size_precision: int) -> float:
         """
         Convert U256 size string to human-readable decimal.
 
-        The exchange WebSocket sends sizes as U256 strings scaled to 10^18.
+        Note: Queue data is now pre-normalized. This method is only needed
+        if you are working with raw WebSocket data outside the client.
 
         Args:
-            size_str: Size as U256 string (e.g., "10000000000000000000")
+            size_str: Size as U256 string (e.g., "10000000000")
+            size_precision: Market's size precision divisor (from MarketConfig)
 
         Returns:
             Human-readable size as float (e.g., 10.0)
 
         Example:
-            >>> ExchangeWebsocketClient.format_size("10000000000000000000")
-            10.0
+            >>> ExchangeWebsocketClient.format_size("10000000000", 10000000000)
+            1.0
         """
-        return int(size_str) / 1_000_000_000_000_000_000
+        return int(size_str) / size_precision
 
     async def connect(self) -> None:
         """
@@ -597,8 +602,14 @@ class ExchangeWebsocketClient:
                 s=data.get("s", self._market_address),  # Default to subscribed market
                 U=int(data.get("U", 0)),  # Default to 0 if not provided
                 u=int(data.get("u", 0)),  # Default to 0 if not provided
-                b=[(str(bid[0]), str(bid[1])) for bid in data.get("b", [])],
-                a=[(str(ask[0]), str(ask[1])) for ask in data.get("a", [])],
+                b=[
+                    (int(bid[0]) / 1_000_000_000_000_000_000, int(bid[1]) / self._market_config.size_precision)
+                    for bid in data.get("b", [])
+                ],
+                a=[
+                    (int(ask[0]) / 1_000_000_000_000_000_000, int(ask[1]) / self._market_config.size_precision)
+                    for ask in data.get("a", [])
+                ],
             )
 
             # Put update on queue
@@ -652,8 +663,14 @@ class ExchangeWebsocketClient:
                 blockId=data.get("blockId", "0x0"),
                 U=int(data.get("U", 0)),
                 u=int(data.get("u", 0)),
-                b=[(str(bid[0]), str(bid[1])) for bid in data.get("b", [])],
-                a=[(str(ask[0]), str(ask[1])) for ask in data.get("a", [])],
+                b=[
+                    (int(bid[0]) / 1_000_000_000_000_000_000, int(bid[1]) / self._market_config.size_precision)
+                    for bid in data.get("b", [])
+                ],
+                a=[
+                    (int(ask[0]) / 1_000_000_000_000_000_000, int(ask[1]) / self._market_config.size_precision)
+                    for ask in data.get("a", [])
+                ],
             )
 
             # Put update on queue

@@ -104,9 +104,7 @@ Orders consume margin balances (via the margin account contract), NOT wallet bal
 - The SDK handles conversion automatically, but price rounding behavior can be configured
 
 ### WebSocket Price Formatting
-The frontend orderbook WebSocket always sends prices in 10^18 format (regardless of market precision). Always use:
-- `KuruFrontendOrderbookClient.format_websocket_price()` for prices
-- `KuruFrontendOrderbookClient.format_websocket_size()` for sizes
+Both WebSocket clients (`KuruFrontendOrderbookClient` and `ExchangeWebsocketClient`) pre-normalize prices and sizes to human-readable floats before placing data on the queue. No manual conversion is needed when consuming updates from the queue.
 
 ### Access List Optimization
 Enable `KURU_USE_ACCESS_LIST=true` to use EIP-2930 access lists, which can reduce gas costs by pre-declaring storage access patterns.
