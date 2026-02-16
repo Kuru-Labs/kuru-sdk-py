@@ -5,17 +5,17 @@ from web3 import Web3
 
 from typing import Optional
 
-from src.configs import (
+from kuru_sdk_py.configs import (
     MarketConfig,
     ConnectionConfig,
     WalletConfig,
     TransactionConfig,
     OrderExecutionConfig,
 )
-from src.manager.order import Order, OrderType, OrderStatus, OrderSide
-from src.utils import load_abi
-from src.transaction.transaction import AsyncTransactionSenderMixin
-from src.transaction.access_list import (
+from kuru_sdk_py.manager.order import Order, OrderType, OrderStatus, OrderSide
+from kuru_sdk_py.utils import load_abi
+from kuru_sdk_py.transaction.transaction import AsyncTransactionSenderMixin
+from kuru_sdk_py.transaction.access_list import (
     build_access_list_for_cancel_only,
     build_access_list_for_cancel_and_place,
 )
@@ -267,7 +267,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         # Build access list if we have any operations
         access_list = None
         if buy_prices or sell_prices or order_ids_to_cancel:
-            from src.transaction.access_list import (
+            from kuru_sdk_py.transaction.access_list import (
                 build_access_list_for_cancel_and_place,
             )
 

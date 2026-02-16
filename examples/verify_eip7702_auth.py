@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from web3 import AsyncWeb3, AsyncHTTPProvider
-from src.configs import initialize_kuru_mm_config, market_config_from_market_address
+from kuru_sdk_py.configs import initialize_kuru_mm_config, market_config_from_market_address
 
 
 async def main():
@@ -67,7 +67,7 @@ async def main():
     # Check 4: Verify margin balances (optional)
     logger.info("\n--- Check 4: Margin Balances (Optional) ---")
     try:
-        from src.utils import load_abi
+        from kuru_sdk_py.utils import load_abi
         margin_abi = load_abi("margin_account")
         margin_contract = w3.eth.contract(
             address=market_config.margin_contract_address,

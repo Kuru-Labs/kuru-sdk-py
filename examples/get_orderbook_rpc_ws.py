@@ -17,9 +17,9 @@ from web3 import Account
 # Add parent directory to path to import src module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.configs import KuruTopicsSignature, MON_USDC_MARKET
-from src.feed.rpc_ws import RpcWebsocket
-from src.manager.events import (
+from kuru_sdk_py.configs import KuruTopicsSignature, MON_USDC_MARKET
+from kuru_sdk_py.feed.rpc_ws import RpcWebsocket
+from kuru_sdk_py.manager.events import (
     OrderCreatedEvent,
     OrdersCanceledEvent,
     TradeEvent,

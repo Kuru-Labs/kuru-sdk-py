@@ -72,8 +72,8 @@ The SDK handles (1), (3), and (4). You supply (2).
 import os
 from dotenv import load_dotenv
 
-from src.client import KuruClient
-from src.configs import ConfigManager
+from kuru_sdk_py.client import KuruClient
+from kuru_sdk_py.configs import ConfigManager
 
 load_dotenv()
 
@@ -107,7 +107,7 @@ If you quote both sides, keep both base and quote margin funded; otherwise your 
 Set an order callback to track your order lifecycle:
 
 ```python
-from src.manager.order import Order, OrderStatus
+from kuru_sdk_py.manager.order import Order, OrderStatus
 
 active_cloids: set[str] = set()
 
@@ -126,7 +126,7 @@ Alternatively, read from `client.orders_manager.processed_orders_queue` instead 
 ### Step 4 - Subscribe to real-time orderbook data
 
 ```python
-from src.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
+from kuru_sdk_py.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
 
 best_bid: float | None = None
 best_ask: float | None = None
@@ -150,7 +150,7 @@ Build a grid of orders, cancel stale ones, and send them in a single batch trans
 
 ```python
 import time
-from src.manager.order import Order, OrderType, OrderSide
+from kuru_sdk_py.manager.order import Order, OrderType, OrderSide
 
 def build_grid(mid: float) -> list[Order]:
     ts = int(time.time() * 1000)
@@ -226,7 +226,7 @@ quote = margin_quote_wei / (10 ** market_config.quote_token_decimals)
 ### Limit Orders
 
 ```python
-from src.manager.order import Order, OrderType, OrderSide
+from kuru_sdk_py.manager.order import Order, OrderType, OrderSide
 
 Order(
     cloid="my-bid-1",
@@ -274,8 +274,8 @@ Connects to Kuru's frontend orderbook WebSocket. Delivers a **full L2 snapshot**
 
 ```python
 import asyncio
-from src.configs import ConfigManager
-from src.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
+from kuru_sdk_py.configs import ConfigManager
+from kuru_sdk_py.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
 
 market_config = ConfigManager.load_market_config(market_address="0x...", fetch_from_chain=True)
 connection_config = ConfigManager.load_connection_config()
@@ -320,8 +320,8 @@ Connects to the exchange WebSocket in **Binance-compatible format**. Delivers in
 
 ```python
 import asyncio
-from src.configs import ConfigManager
-from src.feed.exchange_ws import ExchangeWebsocketClient, DepthUpdate, MonadDepthUpdate
+from kuru_sdk_py.configs import ConfigManager
+from kuru_sdk_py.feed.exchange_ws import ExchangeWebsocketClient, DepthUpdate, MonadDepthUpdate
 
 market_config = ConfigManager.load_market_config(market_address="0x...", fetch_from_chain=True)
 connection_config = ConfigManager.load_connection_config()
@@ -382,7 +382,7 @@ The SDK uses `ConfigManager` to load configuration from environment variables wi
 For advanced configuration (custom timeouts, reconnection behavior, gas settings, presets), see `examples/config_examples.py`.
 
 ```python
-from src.configs import ConfigManager, ConfigPresets
+from kuru_sdk_py.configs import ConfigManager, ConfigPresets
 
 # One-liner: load everything from env vars
 configs = ConfigManager.load_all_configs(

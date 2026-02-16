@@ -1,4 +1,4 @@
-from src.config_defaults import (
+from kuru_sdk_py.config_defaults import (
     DEFAULT_RPC_URL,
     DEFAULT_RPC_WS_URL,
     DEFAULT_KURU_WS_URL,

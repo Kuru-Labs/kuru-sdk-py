@@ -3,7 +3,7 @@ import signal
 from typing import Optional, Callable, Awaitable
 from loguru import logger
 
-from src.configs import (
+from kuru_sdk_py.configs import (
     MarketConfig,
     ConnectionConfig,
     WalletConfig,
@@ -14,13 +14,13 @@ from src.configs import (
     KuruMMConfig,  # Legacy - for backward compatibility
     KuruTopicsSignature,
 )
-from src.manager.orders_manager import OrdersManager, SentOrders
-from src.executor.orders_executor import OrdersExecutor
-from src.feed.rpc_ws import RpcWebsocket
-from src.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
-from src.user.user import User
-from src.manager.order import Order, OrderSide, OrderType, OrderStatus
-from src.utils.utils import string_to_bytes32
+from kuru_sdk_py.manager.orders_manager import OrdersManager, SentOrders
+from kuru_sdk_py.executor.orders_executor import OrdersExecutor
+from kuru_sdk_py.feed.rpc_ws import RpcWebsocket
+from kuru_sdk_py.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
+from kuru_sdk_py.user.user import User
+from kuru_sdk_py.manager.order import Order, OrderSide, OrderType, OrderStatus
+from kuru_sdk_py.utils.utils import string_to_bytes32
 
 
 class KuruClient:

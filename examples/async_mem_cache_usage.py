@@ -7,7 +7,7 @@ from pathlib import Path
 # Add parent directory to path to import src module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.utils.async_mem_cache import AsyncMemCache
+from kuru_sdk_py.utils.async_mem_cache import AsyncMemCache
 
 
 async def handle_expiry(key: str, value: dict):

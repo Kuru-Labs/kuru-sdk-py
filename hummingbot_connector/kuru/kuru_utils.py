@@ -3,7 +3,7 @@ from typing import Optional
 
 from pydantic import BaseModel, SecretStr, Field
 
-from src.configs import MarketConfig, ConfigManager
+from kuru_sdk_py.configs import MarketConfig, ConfigManager
 
 from hummingbot_connector.kuru import kuru_constants as CONSTANTS
 

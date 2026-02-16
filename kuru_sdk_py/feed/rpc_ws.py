@@ -4,22 +4,22 @@ from loguru import logger
 from web3 import AsyncWeb3, Web3
 from web3.providers.persistent import WebSocketProvider
 
-from src.utils import load_abi
-from src.utils.utils import normalize_hex, bytes32_to_string
-from src.utils.ws_utils import (
+from kuru_sdk_py.utils import load_abi
+from kuru_sdk_py.utils.utils import normalize_hex, bytes32_to_string
+from kuru_sdk_py.utils.ws_utils import (
     calculate_backoff_delay,
     format_reconnect_attempts,
     parse_hex_or_int,
     BoundedDedupSet,
 )
-from src.manager.orders_manager import OrdersManager
-from src.manager.events import (
+from kuru_sdk_py.manager.orders_manager import OrdersManager
+from kuru_sdk_py.manager.events import (
     OrderCreatedEvent,
     OrdersCanceledEvent,
     TradeEvent,
     BatchUpdateMMEvent,
 )
-from src.configs import (
+from kuru_sdk_py.configs import (
     KuruTopicsSignature,
     MarketConfig,
     ConnectionConfig,

@@ -2,7 +2,7 @@ import os
 from unittest.mock import MagicMock, patch
 from web3 import Web3
 import pytest
-from src.configs import (
+from kuru_sdk_py.configs import (
     MarketConfig,
     KuruMMConfig,
     initialize_kuru_mm_config,

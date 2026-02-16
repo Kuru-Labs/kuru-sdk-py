@@ -25,14 +25,14 @@ import asyncio
 # Add parent directory to path to import src module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.executor.orders_executor import OrdersExecutor
-from src.user.user import User
-from src.configs import KuruMMConfig
-from src.configs import MarketConfig, market_config_from_market_address, initialize_kuru_mm_config
+from kuru_sdk_py.executor.orders_executor import OrdersExecutor
+from kuru_sdk_py.user.user import User
+from kuru_sdk_py.configs import KuruMMConfig
+from kuru_sdk_py.configs import MarketConfig, market_config_from_market_address, initialize_kuru_mm_config
 import dotenv
 import os
-from src.manager.order import Order, OrderSide, OrderType
-from src.utils import string_to_bytes32
+from kuru_sdk_py.manager.order import Order, OrderSide, OrderType
+from kuru_sdk_py.utils import string_to_bytes32
 
 
 dotenv.load_dotenv()

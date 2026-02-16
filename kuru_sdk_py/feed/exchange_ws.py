@@ -7,8 +7,8 @@ import websockets.asyncio.client
 import websockets.exceptions
 from loguru import logger
 
-from src.configs import MarketConfig, WebSocketConfig
-from src.utils.ws_utils import calculate_backoff_delay, format_reconnect_attempts
+from kuru_sdk_py.configs import MarketConfig, WebSocketConfig
+from kuru_sdk_py.utils.ws_utils import calculate_backoff_delay, format_reconnect_attempts
 
 
 # === DATACLASSES ===

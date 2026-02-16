@@ -6,7 +6,7 @@ defaults in one place makes it easy to find, update, and maintain configuration
 across the entire codebase.
 
 Usage:
-    from src.config_defaults import DEFAULT_RPC_URL, DEFAULT_TRANSACTION_TIMEOUT
+    from kuru_sdk_py.config_defaults import DEFAULT_RPC_URL, DEFAULT_TRANSACTION_TIMEOUT
 """
 
 # ============================================================================

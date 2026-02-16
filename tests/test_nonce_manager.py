@@ -3,7 +3,7 @@
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from src.transaction.nonce_manager import NonceManager, NonceState
+from kuru_sdk_py.transaction.nonce_manager import NonceManager, NonceState
 
 
 class TestNonceManager:

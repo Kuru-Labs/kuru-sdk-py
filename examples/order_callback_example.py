@@ -10,9 +10,9 @@ This example shows how to:
 import asyncio
 import os
 from loguru import logger
-from src.client import KuruClient
-from src.manager.order import Order, OrderStatus, OrderType, OrderSide
-from src.configs import initialize_kuru_mm_config, market_config_from_market_address
+from kuru_sdk_py.client import KuruClient
+from kuru_sdk_py.manager.order import Order, OrderStatus, OrderType, OrderSide
+from kuru_sdk_py.configs import initialize_kuru_mm_config, market_config_from_market_address
 
 
 # Define your order callback

@@ -3,9 +3,9 @@ from typing import Optional
 from loguru import logger
 from web3 import Web3, Account
 
-from src.utils import load_abi, is_native_token
-from src.utils.validation import validate_ethereum_address, validate_private_key
-from src.config_defaults import (
+from kuru_sdk_py.utils import load_abi, is_native_token
+from kuru_sdk_py.utils.validation import validate_ethereum_address, validate_private_key
+from kuru_sdk_py.config_defaults import (
     DEFAULT_MM_ENTRYPOINT_ADDRESS,
     DEFAULT_MARGIN_CONTRACT_ADDRESS,
     DEFAULT_ORDERBOOK_IMPLEMENTATION,
@@ -380,7 +380,7 @@ class ConfigManager:
             )
         """
         import os
-        from src.config_defaults import ENV_PRIVATE_KEY
+        from kuru_sdk_py.config_defaults import ENV_PRIVATE_KEY
 
         # Load from environment if auto_env enabled
         if auto_env and private_key is None:
@@ -430,7 +430,7 @@ class ConfigManager:
             )
         """
         import os
-        from src.config_defaults import (
+        from kuru_sdk_py.config_defaults import (
             ENV_RPC_URL, ENV_RPC_WS_URL, ENV_KURU_WS_URL, ENV_KURU_API_URL, ENV_EXCHANGE_WS_URL
         )
 
@@ -521,7 +521,7 @@ class ConfigManager:
             )
         """
         import os
-        from src.config_defaults import (
+        from kuru_sdk_py.config_defaults import (
             ENV_MARKET_ADDRESS, ENV_MM_ENTRYPOINT_ADDRESS, ENV_MARGIN_CONTRACT_ADDRESS
         )
 
@@ -599,7 +599,7 @@ class ConfigManager:
             )
         """
         import os
-        from src.config_defaults import (
+        from kuru_sdk_py.config_defaults import (
             ENV_TRANSACTION_TIMEOUT, ENV_POLL_LATENCY,
             ENV_GAS_ADJUSTMENT_PER_SLOT, ENV_GAS_BUFFER_MULTIPLIER
         )
@@ -672,7 +672,7 @@ class ConfigManager:
             )
         """
         import os
-        from src.config_defaults import (
+        from kuru_sdk_py.config_defaults import (
             ENV_MAX_RECONNECT_ATTEMPTS, ENV_RECONNECT_DELAY,
             ENV_HEARTBEAT_INTERVAL, ENV_HEARTBEAT_TIMEOUT,
             ENV_RPC_LOGS_SUBSCRIPTION,
@@ -766,8 +766,8 @@ class ConfigManager:
             )
         """
         import os
-        from src.config_defaults import ENV_POST_ONLY, ENV_AUTO_APPROVE, ENV_USE_ACCESS_LIST
-        from src.utils.validation import validate_boolean_env
+        from kuru_sdk_py.config_defaults import ENV_POST_ONLY, ENV_AUTO_APPROVE, ENV_USE_ACCESS_LIST
+        from kuru_sdk_py.utils.validation import validate_boolean_env
 
         config_dict = {}
 
@@ -821,7 +821,7 @@ class ConfigManager:
             )
         """
         import os
-        from src.config_defaults import (
+        from kuru_sdk_py.config_defaults import (
             ENV_PENDING_TX_TTL, ENV_TRADE_EVENTS_TTL, ENV_CACHE_CHECK_INTERVAL
         )
 

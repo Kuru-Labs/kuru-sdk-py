@@ -3,19 +3,19 @@ from dataclasses import dataclass
 from loguru import logger
 from web3 import AsyncWeb3, AsyncHTTPProvider
 
-from src.configs import ConnectionConfig, CacheConfig
-from src.manager.order import Order
-from src.manager.order import OrderStatus
-from src.manager.events import (
+from kuru_sdk_py.configs import ConnectionConfig, CacheConfig
+from kuru_sdk_py.manager.order import Order
+from kuru_sdk_py.manager.order import OrderStatus
+from kuru_sdk_py.manager.events import (
     TradeEvent,
     OrdersCanceledEvent,
     OrderCreatedEvent,
     BatchUpdateMMEvent,
 )
-from src.utils.async_mem_cache import AsyncMemCache
-from src.manager.order import OrderType
-from src.manager.order import OrderSide
-from src.utils.errors import decode_contract_error
+from kuru_sdk_py.utils.async_mem_cache import AsyncMemCache
+from kuru_sdk_py.manager.order import OrderType
+from kuru_sdk_py.manager.order import OrderSide
+from kuru_sdk_py.utils.errors import decode_contract_error
 
 
 @dataclass

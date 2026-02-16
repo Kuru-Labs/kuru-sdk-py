@@ -77,8 +77,8 @@ Use `ConfigManager` so your bot can be configured via environment variables in p
 import os
 from dotenv import load_dotenv
 
-from src.client import KuruClient
-from src.configs import ConfigManager
+from kuru_sdk_py.client import KuruClient
+from kuru_sdk_py.configs import ConfigManager
 
 load_dotenv()
 
@@ -144,7 +144,7 @@ await client.start()
 If you want the SDK to deliver order lifecycle updates to you automatically, set an order callback **before** `start()`:
 
 ```python
-from src.manager.order import Order, OrderStatus
+from kuru_sdk_py.manager.order import Order, OrderStatus
 
 active_cloids: set[str] = set()
 
@@ -172,7 +172,7 @@ If you prefer not to use callbacks, you can also read from:
 For quoting, you usually want best bid/ask with low latency. The SDK can subscribe to Kuru’s frontend orderbook WebSocket:
 
 ```python
-from src.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
+from kuru_sdk_py.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
 
 best_bid: float | None = None
 best_ask: float | None = None
@@ -202,7 +202,7 @@ Prices and sizes in `FrontendOrderbookUpdate` are pre-normalized to human-readab
 This SDK places/cancels via a unified `Order` dataclass.
 
 ```python
-from src.manager.order import Order, OrderType, OrderSide
+from kuru_sdk_py.manager.order import Order, OrderType, OrderSide
 
 # Limit buy
 Order(
@@ -229,7 +229,7 @@ That is the standard “market maker replace loop”.
 
 ```python
 import time
-from src.manager.order import Order, OrderType, OrderSide
+from kuru_sdk_py.manager.order import Order, OrderType, OrderSide
 
 def build_grid(mid: float) -> list[Order]:
     ts = int(time.time() * 1000)

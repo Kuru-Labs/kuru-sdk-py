@@ -8,7 +8,7 @@ from hummingbot.core.data_type.order_book_tracker_data_source import (
     OrderBookTrackerDataSource,
 )
 
-from src.feed.orderbook_ws import (
+from kuru_sdk_py.feed.orderbook_ws import (
     FrontendOrderbookUpdate,
 )
 

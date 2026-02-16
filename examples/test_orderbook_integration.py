@@ -14,9 +14,9 @@ from dotenv import load_dotenv
 
 # Add parent directory to path to import src module
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.client import KuruClient
-from src.feed.orderbook_ws import FrontendOrderbookUpdate
-from src.configs import ConfigManager, MARKETS
+from kuru_sdk_py.client import KuruClient
+from kuru_sdk_py.feed.orderbook_ws import FrontendOrderbookUpdate
+from kuru_sdk_py.configs import ConfigManager, MARKETS
 
 load_dotenv()
 

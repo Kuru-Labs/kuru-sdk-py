@@ -41,27 +41,27 @@ Use uv to run python scripts to ensure the virtual environment is activated and 
 
 The SDK is organized into these key modules:
 
-1. **`KuruClient`** (`src/client.py`)
+1. **`KuruClient`** (`kuru_sdk_py/client.py`)
    Main facade that orchestrates all operations. Manages lifecycle of all components and provides high-level API for order placement, cancellation, and event subscriptions.
 
-2. **`OrdersManager`** (`src/manager/orders_manager.py`)
+2. **`OrdersManager`** (`kuru_sdk_py/manager/orders_manager.py`)
    Tracks order lifecycle and state. Maps client order IDs (cloids) to on-chain order IDs and processes events from the blockchain.
 
-3. **`OrdersExecutor`** (`src/executor/orders_executor.py`)
+3. **`OrdersExecutor`** (`kuru_sdk_py/executor/orders_executor.py`)
    Executes orders on-chain via the MM Entrypoint contract. Handles batch cancel/replace operations, price/size conversion, tick rounding, and access list optimization.
 
-4. **`User`** (`src/user/user.py`)
+4. **`User`** (`kuru_sdk_py/user/user.py`)
    Manages user operations: margin deposits/withdrawals, token approvals, EIP-7702 authorization, and balance queries.
 
-5. **`RpcWebsocket`** (`src/feed/rpc_ws.py`)
+5. **`RpcWebsocket`** (`kuru_sdk_py/feed/rpc_ws.py`)
    Listens to blockchain events via WebSocket RPC. Processes `OrderCreated`, `OrdersCanceled`, `Trade`, and `BatchUpdateMM` events for order lifecycle tracking.
 
-6. **`KuruFrontendOrderbookClient`** (`src/feed/orderbook_ws.py`)
+6. **`KuruFrontendOrderbookClient`** (`kuru_sdk_py/feed/orderbook_ws.py`)
    Streams real-time orderbook updates via Kuru's WebSocket API. Handles reconnection, subscription management, and data formatting.
 
 ### Configuration System
 
-The config system (`src/configs.py`) uses specialized dataclasses:
+The config system (`kuru_sdk_py/configs.py`) uses specialized dataclasses:
 
 - **`MarketConfig`**: Market parameters (addresses, tick size, precision, token info)
 - **`ConnectionConfig`**: RPC/API endpoints
@@ -86,7 +86,7 @@ Use `ConfigManager` to load configs from environment variables with defaults.
 ### Key Patterns
 
 - **Async factory pattern**: Components use `create()` class methods instead of `__init__` for async initialization
-- **Global nonce manager**: `NonceManager` (`src/transaction/nonce_manager.py`) provides thread-safe nonce tracking to reduce RPC calls
+- **Global nonce manager**: `NonceManager` (`kuru_sdk_py/transaction/nonce_manager.py`) provides thread-safe nonce tracking to reduce RPC calls
 - **Event caching**: Recent transactions and trades are cached to handle duplicate events
 - **WebSocket resilience**: Auto-reconnection with exponential backoff for both RPC and orderbook feeds
 
@@ -120,7 +120,7 @@ When writing tests:
 ## Common Pitfalls
 
 1. **Not calling `client.start()`**: Authorization and event listening won't work without it
-2. **Forgetting `PYTHONPATH=.`**: Examples won't find the `src` module without it
+2. **Forgetting `PYTHONPATH=.`**: Examples won't find the `kuru_sdk_py` module without it
 3. **Using wallet balances instead of margin**: Orders require margin deposits first
 4. **Not handling WebSocket disconnects**: Always set reconnection handlers or use SDK's built-in resilience
 5. **Ignoring tick size**: Prices that don't align to tick size will cause transaction reverts
@@ -130,7 +130,7 @@ When writing tests:
 ## File Organization
 
 ```
-src/
+kuru_sdk_py/
 ├── client.py              # Main KuruClient facade
 ├── configs.py             # Configuration system with dataclasses
 ├── config_defaults.py     # Default values for all configs

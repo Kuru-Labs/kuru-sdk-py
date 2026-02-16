@@ -29,10 +29,10 @@ from dotenv import load_dotenv
 # Add parent directory to path to import src module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.client import KuruClient
-from src.manager.order import Order, OrderType, OrderSide
-from src.configs import initialize_kuru_mm_config, market_config_from_market_address
-from src.transaction.access_list import build_access_list_for_cancel_only
+from kuru_sdk_py.client import KuruClient
+from kuru_sdk_py.manager.order import Order, OrderType, OrderSide
+from kuru_sdk_py.configs import initialize_kuru_mm_config, market_config_from_market_address
+from kuru_sdk_py.transaction.access_list import build_access_list_for_cancel_only
 
 
 # Simple callback that prints processed orders

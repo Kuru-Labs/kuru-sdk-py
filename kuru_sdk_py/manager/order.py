@@ -6,7 +6,7 @@ from time import time
 # Import for type hints in update_order_on_trade
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from src.manager.events import TradeEvent
+    from kuru_sdk_py.manager.events import TradeEvent
 
 
 class OrderSide(Enum):

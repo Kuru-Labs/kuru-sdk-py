@@ -38,8 +38,8 @@ dotenv.load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # SDK imports
-from src.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate, FrontendEvent
-from src.configs import market_config_from_market_address, MarketConfig
+from kuru_sdk_py.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate, FrontendEvent
+from kuru_sdk_py.configs import market_config_from_market_address, MarketConfig
 
 
 # === HELPER FUNCTIONS ===

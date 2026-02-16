@@ -7,8 +7,8 @@ from eth_account.signers.local import LocalAccount
 import asyncio
 
 from .nonce_manager import NonceManager
-from src.utils.errors import decode_contract_error
-from src.configs import TransactionConfig
+from kuru_sdk_py.utils.errors import decode_contract_error
+from kuru_sdk_py.configs import TransactionConfig
 
 
 @runtime_checkable

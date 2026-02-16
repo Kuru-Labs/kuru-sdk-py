@@ -22,7 +22,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["kuru_sdk_py*"]
 
 [tool.setuptools.package-data]
-"src.abis" = ["*.json"]
+"kuru_sdk_py.abis" = ["*.json"]

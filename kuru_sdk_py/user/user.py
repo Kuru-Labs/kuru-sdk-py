@@ -4,19 +4,19 @@ from web3.contract import Contract, AsyncContract
 from typing import Optional
 import requests
 
-from src.configs import (
+from kuru_sdk_py.configs import (
     MarketConfig,
     ConnectionConfig,
     WalletConfig,
     TransactionConfig,
     OrderExecutionConfig,
 )
-from src.utils import (
+from kuru_sdk_py.utils import (
     load_abi,
     ZERO_ADDRESS,
     is_native_token,
 )
-from src.transaction.transaction import AsyncTransactionSenderMixin
+from kuru_sdk_py.transaction.transaction import AsyncTransactionSenderMixin
 
 
 class User(AsyncTransactionSenderMixin):

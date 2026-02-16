@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from src.utils.async_mem_cache import AsyncMemCache
+from kuru_sdk_py.utils.async_mem_cache import AsyncMemCache
 
 
 class TestAsyncMemCache:

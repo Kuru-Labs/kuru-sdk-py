@@ -27,9 +27,9 @@ import aiohttp
 # Add parent directory to path to import src module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.client import KuruClient
-from src.manager.order import Order, OrderType, OrderSide, OrderStatus
-from src.configs import ConfigManager
+from kuru_sdk_py.client import KuruClient
+from kuru_sdk_py.manager.order import Order, OrderType, OrderSide, OrderStatus
+from kuru_sdk_py.configs import ConfigManager
 
 # ============================================================================
 # Configuration

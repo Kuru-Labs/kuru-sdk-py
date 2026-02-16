@@ -14,12 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.configs import MarketConfig
-from src.manager.order import Order as SdkOrder
-from src.manager.order import OrderSide as SdkOrderSide
-from src.manager.order import OrderStatus as SdkOrderStatus
-from src.manager.order import OrderType as SdkOrderType
-from src.feed.orderbook_ws import (
+from kuru_sdk_py.configs import MarketConfig
+from kuru_sdk_py.manager.order import Order as SdkOrder
+from kuru_sdk_py.manager.order import OrderSide as SdkOrderSide
+from kuru_sdk_py.manager.order import OrderStatus as SdkOrderStatus
+from kuru_sdk_py.manager.order import OrderType as SdkOrderType
+from kuru_sdk_py.feed.orderbook_ws import (
     FrontendEvent,
     FrontendOrderbookUpdate,
     KuruFrontendOrderbookClient,

@@ -1,6 +1,6 @@
 from eth_account import Account
 
-from src.configs import WalletConfig
+from kuru_sdk_py.configs import WalletConfig
 
 
 class KuruAuth:

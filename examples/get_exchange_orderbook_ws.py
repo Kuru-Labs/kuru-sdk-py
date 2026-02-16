@@ -54,8 +54,8 @@ Note: This example is read-only and does not require a wallet or private key.
 
 import asyncio
 
-from src.configs import ConfigManager
-from src.feed.exchange_ws import (
+from kuru_sdk_py.configs import ConfigManager
+from kuru_sdk_py.feed.exchange_ws import (
     DepthUpdate,
     ExchangeWebsocketClient,
     MonadDepthUpdate,

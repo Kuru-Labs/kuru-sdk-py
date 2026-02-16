@@ -40,20 +40,20 @@ from hummingbot.core.web_assistant.web_assistants_factory import (
     WebAssistantsFactory,
 )
 
-from src.client import KuruClient
-from src.configs import (
+from kuru_sdk_py.client import KuruClient
+from kuru_sdk_py.configs import (
     ConfigManager,
     ConnectionConfig,
     MarketConfig,
     WalletConfig,
 )
-from src.feed.orderbook_ws import (
+from kuru_sdk_py.feed.orderbook_ws import (
     FrontendOrderbookUpdate,
 )
-from src.manager.order import Order as SdkOrder
-from src.manager.order import OrderSide as SdkOrderSide
-from src.manager.order import OrderStatus as SdkOrderStatus
-from src.manager.order import OrderType as SdkOrderType
+from kuru_sdk_py.manager.order import Order as SdkOrder
+from kuru_sdk_py.manager.order import OrderSide as SdkOrderSide
+from kuru_sdk_py.manager.order import OrderStatus as SdkOrderStatus
+from kuru_sdk_py.manager.order import OrderType as SdkOrderType
 
 from hummingbot_connector.kuru import kuru_constants as CONSTANTS
 from hummingbot_connector.kuru.kuru_api_order_book_data_source import (

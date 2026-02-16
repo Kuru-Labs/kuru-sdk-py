@@ -11,9 +11,9 @@ load_dotenv()
 # Add parent directory to path to import src module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.user.user import User
-from src.configs import KuruMMConfig
-from src.configs import MarketConfig, market_config_from_market_address, initialize_kuru_mm_config
+from kuru_sdk_py.user.user import User
+from kuru_sdk_py.configs import KuruMMConfig
+from kuru_sdk_py.configs import MarketConfig, market_config_from_market_address, initialize_kuru_mm_config
 
 
 async def main():

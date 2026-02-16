@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from web3 import AsyncWeb3, AsyncHTTPProvider, Web3
 
-from src.utils import load_abi
+from kuru_sdk_py.utils import load_abi
 
 
 @dataclass

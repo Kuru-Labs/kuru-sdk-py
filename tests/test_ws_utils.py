@@ -1,6 +1,6 @@
 import pytest
 
-from src.utils.ws_utils import (
+from kuru_sdk_py.utils.ws_utils import (
     calculate_backoff_delay,
     format_reconnect_attempts,
     parse_hex_or_int,

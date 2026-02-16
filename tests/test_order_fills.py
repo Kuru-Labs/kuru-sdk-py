@@ -1,6 +1,6 @@
 import pytest
-from src.manager.order import Order, OrderType, OrderSide, OrderStatus
-from src.manager.events import TradeEvent
+from kuru_sdk_py.manager.order import Order, OrderType, OrderSide, OrderStatus
+from kuru_sdk_py.manager.events import TradeEvent
 
 
 def test_new_order_empty_fills():
