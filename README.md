@@ -446,5 +446,5 @@ uv run pytest tests/ -v
 
 ## Requirements
 
-- Python >= 3.14
+- Python >= 3.10
 - Dependencies managed via uv (see `pyproject.toml`)
