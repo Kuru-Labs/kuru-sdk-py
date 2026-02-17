@@ -55,7 +55,7 @@ async def subscribe_to_events(
 async def main():
     # Configuration - Replace with your values
     RPC_URL = (
-        "wss://rpc.fullnode.kuru.io/"  # e.g., wss://mainnet.infura.io/ws/v3/YOUR_KEY
+        "wss://rpc.monad.xyz/"  # e.g., wss://mainnet.infura.io/ws/v3/YOUR_KEY
     )
     CONTRACT_ADDRESS = "0x0AfE9FE5FB3357d5EaDe01936E8106cC00354c61"
     EVENT_TOPIC = "0xbb5727df79c4917b83df1b9d289621e496b81d656364d1887ec7ece6e9f45f90"  # keccak256 hash of event signature

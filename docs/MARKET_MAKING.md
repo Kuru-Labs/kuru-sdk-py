@@ -47,8 +47,8 @@ PRIVATE_KEY=0x...
 MARKET_ADDRESS=0x...
 
 # Optional endpoints (defaults exist)
-RPC_URL=https://rpc.fullnode.kuru.io/
-RPC_WS_URL=wss://rpc.fullnode.kuru.io/
+RPC_URL=https://rpc.monad.xyz/
+RPC_WS_URL=wss://rpc.monad.xyz/
 KURU_WS_URL=wss://ws.kuru.io/
 KURU_API_URL=https://api.kuru.io/
 

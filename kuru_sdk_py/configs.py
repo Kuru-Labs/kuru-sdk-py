@@ -990,7 +990,7 @@ def market_config_from_market_address(
     market_address: str,
     mm_entrypoint_address: str = "0xA9d8269ad1Bd6e2a02BD8996a338Dc5C16aef440",
     margin_contract_address: str = "0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5",
-    rpc_url: str = "https://rpc.fullnode.kuru.io/",
+    rpc_url: str = "https://rpc.monad.xyz/",
     margin_account_implementation: str = "0x57cF97FE1FAC7D78B07e7e0761410cb2e91F0ca7",
     orderbook_implementation: str = "0xea2Cc8769Fb04Ff1893Ed11cf517b7F040C823CD",
 ) -> MarketConfig:
@@ -1072,8 +1072,8 @@ def market_config_from_market_address(
 
 def initialize_kuru_mm_config(
     private_key: str,
-    rpc_url: str = "https://rpc.fullnode.kuru.io/",
-    rpc_ws_url: str = "wss://rpc.fullnode.kuru.io/",
+    rpc_url: str = "https://rpc.monad.xyz/",
+    rpc_ws_url: str = "wss://rpc.monad.xyz/",
     kuru_ws_url: str = "wss://ws.kuru.io/",
     kuru_api_url: str = "https://api.kuru.io/",
 ) -> KuruMMConfig:
@@ -1087,7 +1087,7 @@ def initialize_kuru_mm_config(
     logger.info(f"Initializing Kuru MM config")
     logger.info(f"User address: {user_address}")
 
-    default_rpc = "https://rpc.fullnode.kuru.io/"
+    default_rpc = "https://rpc.monad.xyz/"
     default_ws = "wss://ws.kuru.io/"
 
     if rpc_url == default_rpc:

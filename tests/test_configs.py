@@ -38,7 +38,7 @@ class TestMarketConfigFromMarketAddress:
         market_address = "0x065C9d28E428A0db40191a54d33d5b7c71a9C394"
         mm_entrypoint_address = "0x0B4D25ce6e9ad4C88157C2721E5DafA22934E1C8"
         margin_contract_address = "0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5"
-        rpc_url = os.getenv("KURU_RPC_URL", "https://rpc.fullnode.kuru.io/")
+        rpc_url = os.getenv("KURU_RPC_URL", "https://rpc.monad.xyz/")
 
         config = market_config_from_market_address(
             market_address=market_address,

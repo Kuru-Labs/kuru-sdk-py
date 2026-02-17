@@ -57,7 +57,7 @@ def resolve_user_address() -> str:
 
 
 async def main() -> None:
-    rpc_ws_url = os.getenv("RPC_WS_URL", "wss://rpc.fullnode.kuru.io/")
+    rpc_ws_url = os.getenv("RPC_WS_URL", "wss://rpc.monad.xyz/")
     user_address = resolve_user_address()
 
     logger.info(f"Connecting to RPC WS: {rpc_ws_url}")

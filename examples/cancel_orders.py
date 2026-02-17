@@ -59,13 +59,13 @@ async def main():
     # Initialize configs
     kuru_config = initialize_kuru_mm_config(
         private_key=os.getenv("PRIVATE_KEY"),
-        rpc_url=os.getenv("RPC_URL", "https://rpc.fullnode.kuru.io/"),
-        rpc_ws_url=os.getenv("RPC_WS_URL", "wss://rpc.fullnode.kuru.io/")
+        rpc_url=os.getenv("RPC_URL", "https://rpc.monad.xyz/"),
+        rpc_ws_url=os.getenv("RPC_WS_URL", "wss://rpc.monad.xyz/")
     )
 
     market_config = market_config_from_market_address(
         market_address=os.getenv("MARKET_ADDRESS", "0x6eB96A614E49b0dAc69F48E799C5C825AF9B33fA"),
-        rpc_url=os.getenv("RPC_URL", "https://rpc.fullnode.kuru.io/")
+        rpc_url=os.getenv("RPC_URL", "https://rpc.monad.xyz/")
     )
 
     # Create client

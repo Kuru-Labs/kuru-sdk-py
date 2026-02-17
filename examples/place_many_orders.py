@@ -14,8 +14,8 @@ Required environment variables:
 - MARKET_ADDRESS: The market contract address (default: 0x6eB96A614E49b0dAc69F48E799C5C825AF9B33fA)
 
 Optional environment variables:
-- RPC_URL: Custom RPC endpoint (default: https://rpc.fullnode.kuru.io/)
-- RPC_WS_URL: Custom WebSocket RPC endpoint (default: wss://rpc.fullnode.kuru.io/)
+- RPC_URL: Custom RPC endpoint (default: https://rpc.monad.xyz/)
+- RPC_WS_URL: Custom WebSocket RPC endpoint (default: wss://rpc.monad.xyz/)
 - BASE_DEPOSIT_AMOUNT: Base tokens to deposit (default: 100)
 - QUOTE_DEPOSIT_AMOUNT: Quote tokens to deposit (default: 1000)
 """

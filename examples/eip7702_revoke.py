@@ -33,12 +33,12 @@ async def main():
 
     config = initialize_kuru_mm_config(
         private_key=private_key,
-        rpc_url="https://rpc.fullnode.kuru.io/",
+        rpc_url="https://rpc.monad.xyz/",
     )
 
     market_config = market_config_from_market_address(
         market_address="0x6eB96A614E49b0dAc69F48E799C5C825AF9B33fA",
-        rpc_url="https://rpc.fullnode.kuru.io/",
+        rpc_url="https://rpc.monad.xyz/",
     )
 
     logger.info(f"Market config: {market_config}")

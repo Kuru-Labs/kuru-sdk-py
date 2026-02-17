@@ -199,7 +199,7 @@ async def main():
     try:
         market_config = market_config_from_market_address(
             market_address=market_address,
-            rpc_url="https://rpc.fullnode.kuru.io/",
+            rpc_url="https://rpc.monad.xyz/",
         )
         logger.info(f"Market config loaded: {market_config.market_symbol}")
         logger.info(f"  Base: {market_config.base_symbol} (decimals: {market_config.base_token_decimals})")

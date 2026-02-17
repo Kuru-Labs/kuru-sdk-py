@@ -27,8 +27,8 @@ PRIVATE_KEY=0x...
 MARKET_ADDRESS=0x...
 
 # Optional endpoints (defaults exist)
-RPC_URL=https://rpc.fullnode.kuru.io/
-RPC_WS_URL=wss://rpc.fullnode.kuru.io/
+RPC_URL=https://rpc.monad.xyz/
+RPC_WS_URL=wss://rpc.monad.xyz/
 KURU_WS_URL=wss://ws.kuru.io/
 KURU_API_URL=https://api.kuru.io/
 
@@ -40,6 +40,9 @@ KURU_POST_ONLY=true
 KURU_AUTO_APPROVE=true
 KURU_USE_ACCESS_LIST=true
 ```
+
+## Example
+You can find an example market making bot [here](https://github.com/Kuru-Labs/mm-example) — a skew-based quoting strategy with event-driven order tracking.
 
 ## Core Concepts
 
