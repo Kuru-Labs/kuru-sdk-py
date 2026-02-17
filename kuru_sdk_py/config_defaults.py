@@ -366,13 +366,16 @@ Keep True unless:
 # ============================================================================
 # TTL values for internal caches that track pending transactions and events.
 
-DEFAULT_PENDING_TX_TTL = 5.0
+DEFAULT_PENDING_TX_TTL = 15.0
 """
 Time-to-live (seconds) for pending transaction cache
 
 Pending transactions are cached to track their confirmation status.
 After this TTL expires without confirmation, the timeout callback is
-triggered (if provided).
+triggered to recover order state from the transaction receipt.
+
+Default of 15s accounts for Monad's ~1s block time plus WebSocket event
+propagation delays. Configurable via KURU_PENDING_TX_TTL env var.
 
 Increase if:
 - Network is slow and transactions take longer

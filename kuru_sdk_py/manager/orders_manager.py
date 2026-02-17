@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from typing import Any, Callable, Optional
 from loguru import logger
 from web3 import AsyncWeb3, AsyncHTTPProvider
 
@@ -66,6 +67,9 @@ class OrdersManager:
         self.trade_events_cache: AsyncMemCache = None
         self.processed_orders_queue: asyncio.Queue[Order] = None
 
+        # Callback to process receipt logs when timeout fires on a confirmed tx
+        self._receipt_processor: Optional[Callable] = None
+
     @classmethod
     async def create(
         cls,
@@ -107,34 +111,80 @@ class OrdersManager:
 
         return instance
 
-    async def on_transaction_timeout(self, txhash: str) -> None:
+    def set_receipt_processor(self, processor: Callable) -> None:
+        """Set the callback used to process receipt logs on timeout recovery."""
+        self._receipt_processor = processor
+
+    async def start(self) -> None:
+        """Start background cache monitors for pending transactions and trade events."""
+        await self.pending_transactions.start()
+        await self.trade_events_cache.start()
+        logger.debug("OrdersManager cache monitors started")
+
+    async def on_transaction_timeout(self, txhash: str, value: Any) -> None:
         """Callback function to handle transaction timeout."""
-        # get transaction receipt from rpc
-        receipt = await self.w3.eth.get_transaction_receipt(txhash)
+        try:
+            receipt = await self.w3.eth.get_transaction_receipt(txhash)
+        except Exception as e:
+            logger.error(f"Failed to fetch receipt for txhash {txhash}: {e}")
+            receipt = None
+
         if receipt is None:
-            logger.error(f"Transaction receipt is not found for txhash {txhash}")
+            # Transaction not found on-chain — likely dropped or still pending
+            logger.warning(f"Transaction {txhash} not found on-chain, marking orders as timed out")
+            await self._mark_orders_for_tx(txhash, OrderStatus.ORDER_TIMEOUT)
             return
 
         if receipt.status == 1:
-            pass  # TODO: Implement logic to handle confirmed transaction
+            # Transaction succeeded but WebSocket events were missed — recover from receipt
+            logger.info(f"Transaction {txhash} confirmed but events missed, recovering from receipt")
+            if self._receipt_processor is not None:
+                try:
+                    await self._receipt_processor(receipt)
+                except Exception as e:
+                    logger.error(f"Error processing receipt logs for {txhash}: {e}")
+            else:
+                logger.warning(
+                    f"Transaction {txhash} confirmed but no receipt processor set, "
+                    "cannot recover missed events"
+                )
         else:
-            # Transaction failed - try to get revert reason
+            # Transaction reverted — mark orders as failed
             decoded_error = await self._get_revert_reason(txhash, receipt)
+            sent = self.txhash_to_sent_orders.get(txhash)
+            order_counts = (
+                f"buy={len(sent.buy_orders)}, sell={len(sent.sell_orders)}, cancel={len(sent.cancel_orders)}"
+                if sent else "unknown"
+            )
 
             if decoded_error:
                 logger.error(
                     f"Transaction {txhash} reverted: {decoded_error}\n"
-                    f"  Failed orders: buy={len(self.txhash_to_sent_orders[txhash].buy_orders)}, "
-                    f"sell={len(self.txhash_to_sent_orders[txhash].sell_orders)}, "
-                    f"cancel={len(self.txhash_to_sent_orders[txhash].cancel_orders)}"
+                    f"  Failed orders: {order_counts}"
                 )
             else:
                 logger.error(
                     f"Transaction {txhash} failed (no revert reason available)\n"
-                    f"  Failed orders: buy={len(self.txhash_to_sent_orders[txhash].buy_orders)}, "
-                    f"sell={len(self.txhash_to_sent_orders[txhash].sell_orders)}, "
-                    f"cancel={len(self.txhash_to_sent_orders[txhash].cancel_orders)}"
+                    f"  Failed orders: {order_counts}"
                 )
+
+            await self._mark_orders_for_tx(txhash, OrderStatus.ORDER_FAILED)
+
+    async def _mark_orders_for_tx(self, txhash: str, status: OrderStatus) -> None:
+        """Mark all orders associated with a txhash with the given status."""
+        sent = self.txhash_to_sent_orders.get(txhash)
+        if sent is None:
+            logger.debug(f"No sent orders found for txhash {txhash}")
+            return
+
+        all_orders = sent.buy_orders + sent.sell_orders + sent.cancel_orders
+        for order in all_orders:
+            order.update_status(status)
+            await self._finalize_order_update(order)
+
+        logger.info(
+            f"Marked {len(all_orders)} orders as {status.value} for txhash {txhash[:10]}..."
+        )
 
     async def _get_revert_reason(self, txhash: str, receipt) -> str | None:
         """
@@ -446,8 +496,21 @@ class OrdersManager:
                 )
                 continue
 
+        # Clear pending transaction — events arrived successfully
+        await self.pending_transactions.delete(txhash)
+
     async def close(self) -> None:
-        """Close the HTTP provider session."""
+        """Stop cache monitors and close the HTTP provider session."""
+        # Stop cache monitors
+        try:
+            await self.pending_transactions.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping pending_transactions cache: {e}")
+        try:
+            await self.trade_events_cache.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping trade_events_cache: {e}")
+
         try:
             if hasattr(self.w3.provider, "_session") and self.w3.provider._session:
                 await self.w3.provider._session.close()

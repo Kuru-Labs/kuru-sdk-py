@@ -272,6 +272,37 @@ class RpcWebsocket:
         elif log_address is not None:
             logger.trace(f"Log from unknown contract address: {log_address}")
 
+    async def process_receipt_logs(self, receipt) -> None:
+        """
+        Process logs from a transaction receipt through the existing event pipeline.
+
+        Used as a fallback when WebSocket events are missed — feeds receipt logs
+        through _handle_log which handles deduplication, contract decoding, and
+        OrdersManager event dispatch.
+
+        Args:
+            receipt: Transaction receipt (from web3 eth.get_transaction_receipt)
+        """
+        logs = receipt.get("logs", [])
+        if not logs:
+            logger.debug(f"No logs in receipt for tx {receipt.get('transactionHash', 'unknown')}")
+            return
+
+        processed = 0
+        for log in logs:
+            # Convert AttributeDict to regular dict for _handle_log
+            log_dict = dict(log)
+            # Convert nested AttributeDict fields (e.g., topics)
+            if hasattr(log_dict.get("topics", []), "items"):
+                log_dict["topics"] = list(log_dict["topics"])
+            await self._handle_log(log_dict)
+            processed += 1
+
+        logger.info(
+            f"Receipt fallback: processed {processed} logs for tx "
+            f"{str(receipt.get('transactionHash', 'unknown'))[:10]}..."
+        )
+
     async def process_subscription_logs(self) -> None:
         """
         Process logs from WebSocket subscription with automatic reconnection.

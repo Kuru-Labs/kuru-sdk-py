@@ -226,6 +226,9 @@ class KuruClient:
         self.websocket.set_on_reconnect(self._on_rpc_ws_reconnected)
         self.websocket.set_on_disconnect(self._on_rpc_ws_disconnected)
 
+        # Wire receipt processor for timeout recovery
+        self.orders_manager.set_receipt_processor(self.websocket.process_receipt_logs)
+
         return self
 
     def set_order_callback(
@@ -325,6 +328,9 @@ class KuruClient:
             f"Authorizing MM Entrypoint for user {self.user.user_address} with MM Entrypoint {self.user.mm_entrypoint_address}"
         )
         await self.user.eip_7702_auth()
+
+        # Start cache monitors for pending transactions and trade events
+        await self.orders_manager.start()
 
         # Connect to websocket
         await self.websocket.connect()

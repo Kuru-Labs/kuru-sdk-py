@@ -36,6 +36,7 @@ class OrderStatus(Enum):
     ORDER_FULLY_FILLED = "fully_filled"
     ORDER_CANCELLED = "cancelled"
     ORDER_TIMEOUT = "timeout"
+    ORDER_FAILED = "failed"
 
 
 @dataclass

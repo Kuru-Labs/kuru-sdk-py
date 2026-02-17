@@ -102,6 +102,7 @@ class KuruExchange(ExchangePyBase):
         SdkOrderStatus.ORDER_FULLY_FILLED: OrderState.FILLED,
         SdkOrderStatus.ORDER_CANCELLED: OrderState.CANCELED,
         SdkOrderStatus.ORDER_TIMEOUT: OrderState.FAILED,
+        SdkOrderStatus.ORDER_FAILED: OrderState.FAILED,
     }
 
     def __init__(
