@@ -415,6 +415,12 @@ Batch cancel/replace every second is expensive on-chain. Common approaches:
 - Use fewer levels or smaller grids
 - Enable EIP-2930 access list optimization (`KURU_USE_ACCESS_LIST=true`)
 
+If you see **"out of gas" or "gas too low" transaction failures**, increase the gas buffer multiplier:
+
+```bash
+KURU_GAS_BUFFER_MULTIPLIER=1.3  # default is 1.2; try 1.3 to 1.5
+```
+
 ### Safety checks
 
 - **Stale data guard** - don't quote if your market data feed is older than N milliseconds

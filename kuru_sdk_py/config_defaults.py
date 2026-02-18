@@ -102,25 +102,30 @@ The default of 6500 is based on standard EVM gas costs:
 - Net savings: ~6500 gas per slot
 
 Adjust this if:
-- Different EVM implementation (e.g., Optimism, Arbitrum)
 - RPC provider uses different gas calculation
 - Testing shows different actual savings
 """
 
-DEFAULT_GAS_BUFFER_MULTIPLIER = 1.1
+# If you are seeing "out of gas" or "gas too low" transaction failures, increase
+# this multiplier by setting the KURU_GAS_BUFFER_MULTIPLIER environment variable
+# to a higher value (e.g., 1.3 or 1.5).
+DEFAULT_GAS_BUFFER_MULTIPLIER = 1.2
 """
-Safety buffer multiplier for gas estimates (default: 10% extra)
+Safety buffer multiplier for gas estimates (default: 20% extra)
 
 Gas estimates from eth_estimateGas are not always accurate due to:
 - State changes between estimation and execution
 - Block gas limit variations
 - Estimation edge cases
 
-The 10% buffer provides a safety margin while not overpaying significantly.
+The 20% buffer provides a safety margin while not overpaying significantly.
 
 Increase if you see:
-- Frequent "out of gas" errors
+- Frequent "out of gas" or "gas too low" errors
 - Transactions failing due to insufficient gas
+
+To increase without changing code, set the environment variable:
+    KURU_GAS_BUFFER_MULTIPLIER=1.5  # or 2.0 for a larger buffer
 
 Decrease if:
 - Gas costs are critical for profitability

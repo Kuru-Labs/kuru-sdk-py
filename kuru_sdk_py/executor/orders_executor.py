@@ -19,6 +19,7 @@ from kuru_sdk_py.transaction.access_list import (
     build_access_list_for_cancel_only,
     build_access_list_for_cancel_and_place,
 )
+from kuru_sdk_py.configs import KuruMMConfig
 
 
 def round_price_down(price_int: int, tick_size: int) -> int:
