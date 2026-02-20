@@ -109,7 +109,7 @@ Adjust this if:
 # If you are seeing "out of gas" or "gas too low" transaction failures, increase
 # this multiplier by setting the KURU_GAS_BUFFER_MULTIPLIER environment variable
 # to a higher value (e.g., 1.3 or 1.5).
-DEFAULT_GAS_BUFFER_MULTIPLIER = 1.2
+DEFAULT_GAS_BUFFER_MULTIPLIER = 1.35
 """
 Safety buffer multiplier for gas estimates (default: 20% extra)
 
