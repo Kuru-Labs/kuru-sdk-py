@@ -266,16 +266,16 @@ MON_USDC_MARKET = MarketConfig(
     base_token="0x0000000000000000000000000000000000000000",
     quote_token="0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
     market_symbol="MON-USDC",
-    mm_entrypoint_address="0xA9d8269ad1Bd6e2a02BD8996a338Dc5C16aef440",
-    margin_contract_address="0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5",
+    mm_entrypoint_address=DEFAULT_MM_ENTRYPOINT_ADDRESS,
+    margin_contract_address=DEFAULT_MARGIN_CONTRACT_ADDRESS,
     base_token_decimals=18,
     quote_token_decimals=6,
     price_precision=100000000,
     size_precision=10000000000,
     base_symbol="MON",
     quote_symbol="USDC",
-    orderbook_implementation="0xea2Cc8769Fb04Ff1893Ed11cf517b7F040C823CD",
-    margin_account_implementation="0x57cF97FE1FAC7D78B07e7e0761410cb2e91F0ca7",
+    orderbook_implementation=DEFAULT_ORDERBOOK_IMPLEMENTATION,
+    margin_account_implementation=DEFAULT_MARGIN_ACCOUNT_IMPLEMENTATION,
     tick_size=100,
 )
 
@@ -988,11 +988,11 @@ class ConfigPresets:
 
 def market_config_from_market_address(
     market_address: str,
-    mm_entrypoint_address: str = "0xA9d8269ad1Bd6e2a02BD8996a338Dc5C16aef440",
-    margin_contract_address: str = "0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5",
-    rpc_url: str = "https://rpc.monad.xyz/",
-    margin_account_implementation: str = "0x57cF97FE1FAC7D78B07e7e0761410cb2e91F0ca7",
-    orderbook_implementation: str = "0xea2Cc8769Fb04Ff1893Ed11cf517b7F040C823CD",
+    mm_entrypoint_address: str = DEFAULT_MM_ENTRYPOINT_ADDRESS,
+    margin_contract_address: str = DEFAULT_MARGIN_CONTRACT_ADDRESS,
+    rpc_url: str = DEFAULT_RPC_URL,
+    margin_account_implementation: str = DEFAULT_MARGIN_ACCOUNT_IMPLEMENTATION,
+    orderbook_implementation: str = DEFAULT_ORDERBOOK_IMPLEMENTATION,
 ) -> MarketConfig:
     try:
         orderbook_abi = load_abi("orderbook")
@@ -1072,10 +1072,10 @@ def market_config_from_market_address(
 
 def initialize_kuru_mm_config(
     private_key: str,
-    rpc_url: str = "https://rpc.monad.xyz/",
-    rpc_ws_url: str = "wss://rpc.monad.xyz/",
-    kuru_ws_url: str = "wss://ws.kuru.io/",
-    kuru_api_url: str = "https://api.kuru.io/",
+    rpc_url: str = DEFAULT_RPC_URL,
+    rpc_ws_url: str = DEFAULT_RPC_WS_URL,
+    kuru_ws_url: str = DEFAULT_KURU_WS_URL,
+    kuru_api_url: str = DEFAULT_KURU_API_URL,
 ) -> KuruMMConfig:
     if not private_key:
         raise ValueError("private_key cannot be None or empty")
@@ -1087,8 +1087,7 @@ def initialize_kuru_mm_config(
     logger.info(f"Initializing Kuru MM config")
     logger.info(f"User address: {user_address}")
 
-    default_rpc = "https://rpc.monad.xyz/"
-    default_ws = "wss://ws.kuru.io/"
+    default_rpc = DEFAULT_RPC_URL
 
     if rpc_url == default_rpc:
         logger.warning(

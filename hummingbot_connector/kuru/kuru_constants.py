@@ -22,7 +22,7 @@ KNOWN_MARKETS = {
         "base_token": "0x0000000000000000000000000000000000000000",
         "quote_token": "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
         "market_symbol": "MON-USDC",
-        "mm_entrypoint_address": "0xA9d8269ad1Bd6e2a02BD8996a338Dc5C16aef440",
+        "mm_entrypoint_address": "0xd63aD20884aFA6281969b2BD21A8708Eed546fAC",
         "margin_contract_address": "0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5",
         "base_token_decimals": 18,
         "quote_token_decimals": 6,
