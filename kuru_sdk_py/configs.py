@@ -19,6 +19,7 @@ from kuru_sdk_py.config_defaults import (
     DEFAULT_POLL_LATENCY,
     DEFAULT_GAS_ADJUSTMENT_PER_SLOT,
     DEFAULT_GAS_BUFFER_MULTIPLIER,
+    DEFAULT_GAS_BUFFER,
     DEFAULT_MAX_RECONNECT_ATTEMPTS,
     DEFAULT_RECONNECT_DELAY,
     DEFAULT_HEARTBEAT_INTERVAL,
@@ -104,11 +105,13 @@ class TransactionConfig:
         poll_latency: Seconds to wait after confirmation for RPC sync
         gas_adjustment_per_slot: Gas to subtract per access list storage slot
         gas_buffer_multiplier: Safety buffer multiplier for gas estimates (e.g., 1.1 = 10% extra)
+        gas_buffer: Fixed gas buffer added after access-list slot subtraction to prevent negative gas
     """
     timeout: int = DEFAULT_TRANSACTION_TIMEOUT
     poll_latency: float = DEFAULT_POLL_LATENCY
     gas_adjustment_per_slot: int = DEFAULT_GAS_ADJUSTMENT_PER_SLOT
     gas_buffer_multiplier: float = DEFAULT_GAS_BUFFER_MULTIPLIER
+    gas_buffer: int = DEFAULT_GAS_BUFFER
 
 
 @dataclass
@@ -574,6 +577,7 @@ class ConfigManager:
         poll_latency: Optional[float] = None,
         gas_adjustment_per_slot: Optional[int] = None,
         gas_buffer_multiplier: Optional[float] = None,
+        gas_buffer: Optional[int] = None,
         auto_env: bool = True,
     ) -> TransactionConfig:
         """
@@ -586,6 +590,7 @@ class ConfigManager:
             poll_latency: Seconds to wait after confirmation for RPC sync
             gas_adjustment_per_slot: Gas to subtract per access list slot
             gas_buffer_multiplier: Safety buffer multiplier for gas estimates
+            gas_buffer: Fixed gas buffer added after access-list slot subtraction
             auto_env: Automatically load from environment variables
 
         Returns:
@@ -601,7 +606,8 @@ class ConfigManager:
         import os
         from kuru_sdk_py.config_defaults import (
             ENV_TRANSACTION_TIMEOUT, ENV_POLL_LATENCY,
-            ENV_GAS_ADJUSTMENT_PER_SLOT, ENV_GAS_BUFFER_MULTIPLIER
+            ENV_GAS_ADJUSTMENT_PER_SLOT, ENV_GAS_BUFFER_MULTIPLIER,
+            ENV_GAS_BUFFER,
         )
 
         config_dict = {}
@@ -616,6 +622,8 @@ class ConfigManager:
                 config_dict["gas_adjustment_per_slot"] = int(env_gas_adj)
             if env_gas_buf := os.getenv(ENV_GAS_BUFFER_MULTIPLIER):
                 config_dict["gas_buffer_multiplier"] = float(env_gas_buf)
+            if env_gas_buf_fixed := os.getenv(ENV_GAS_BUFFER):
+                config_dict["gas_buffer"] = int(env_gas_buf_fixed)
 
         # Explicit arguments override
         if timeout is not None:
@@ -626,6 +634,8 @@ class ConfigManager:
             config_dict["gas_adjustment_per_slot"] = gas_adjustment_per_slot
         if gas_buffer_multiplier is not None:
             config_dict["gas_buffer_multiplier"] = gas_buffer_multiplier
+        if gas_buffer is not None:
+            config_dict["gas_buffer"] = gas_buffer
 
         return TransactionConfig(**config_dict)
 

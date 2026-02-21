@@ -99,7 +99,7 @@ class AsyncTransactionSenderMixin:
                     adjusted_gas = estimated_gas - (
                         total_storage_slots
                         * self.transaction_config.gas_adjustment_per_slot
-                    )
+                    ) + self.transaction_config.gas_buffer
                     final_gas = int(
                         adjusted_gas * self.transaction_config.gas_buffer_multiplier
                     )

@@ -132,6 +132,18 @@ Decrease if:
 - You have very accurate custom gas estimation
 """
 
+DEFAULT_GAS_BUFFER = 80_000
+"""
+Fixed gas buffer (in gas units) added after access-list slot subtraction.
+
+When an access list is used, gas is adjusted as:
+    adjusted_gas = estimated_gas - (slots * gas_adjustment_per_slot) + gas_buffer
+
+This prevents the adjusted gas from going negative when large access lists
+cause the subtraction to exceed the estimated gas. The buffer is applied
+before the gas_buffer_multiplier.
+"""
+
 # ============================================================================
 # WEBSOCKET CONFIGURATION
 # ============================================================================
@@ -493,6 +505,9 @@ ENV_GAS_ADJUSTMENT_PER_SLOT = "KURU_GAS_ADJUSTMENT_PER_SLOT"
 
 ENV_GAS_BUFFER_MULTIPLIER = "KURU_GAS_BUFFER_MULTIPLIER"
 """Environment variable for gas estimate safety buffer multiplier"""
+
+ENV_GAS_BUFFER = "KURU_GAS_BUFFER"
+"""Environment variable for fixed gas buffer added after access-list slot subtraction"""
 
 # WebSocket configuration
 ENV_MAX_RECONNECT_ATTEMPTS = "KURU_MAX_RECONNECT_ATTEMPTS"
