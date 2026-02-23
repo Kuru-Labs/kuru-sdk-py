@@ -132,7 +132,7 @@ Decrease if:
 - You have very accurate custom gas estimation
 """
 
-DEFAULT_GAS_BUFFER = 80_000
+DEFAULT_GAS_BUFFER = 40_000
 """
 Fixed gas buffer (in gas units) added after access-list slot subtraction.
 
@@ -246,6 +246,15 @@ Maximum WebSocket message size in bytes
 
 Large orderbook snapshots or batch updates can exceed default WebSocket
 message size limits. 10MB should handle even very deep orderbooks.
+"""
+
+DEFAULT_EXCHANGE_MARKET_DEPTH = "depth"
+"""
+Default depth channel suffix for Exchange WebSocket subscriptions.
+
+The subscription channel is built as: {market_address}@{exchange_market_depth}
+Default "depth" subscribes to the full depth stream. Change to e.g. "depth20"
+to subscribe to a top-20 depth stream if supported by the server.
 """
 
 # ============================================================================
@@ -521,6 +530,9 @@ ENV_HEARTBEAT_INTERVAL = "KURU_HEARTBEAT_INTERVAL"
 
 ENV_HEARTBEAT_TIMEOUT = "KURU_HEARTBEAT_TIMEOUT"
 """Environment variable for WebSocket heartbeat timeout (seconds)"""
+
+ENV_EXCHANGE_MARKET_DEPTH = "EXCHANGE_MARKET_DEPTH"
+"""Environment variable for Exchange WebSocket depth channel suffix (e.g. "depth", "depth20")"""
 
 ENV_RPC_LOGS_SUBSCRIPTION = "KURU_RPC_LOGS_SUBSCRIPTION"
 """

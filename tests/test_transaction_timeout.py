@@ -230,6 +230,86 @@ class TestTransactionTimeoutNoReceipt:
         assert buy1.status == OrderStatus.ORDER_TIMEOUT
 
 
+class TestCacheExpiryFiresCallback:
+    """Tests that the cache monitor actually fires the on_expire callback after TTL."""
+
+    @pytest.mark.asyncio
+    async def test_expiry_fires_timeout_callback(self):
+        """A pending tx that is NOT deleted should trigger on_transaction_timeout after TTL."""
+        manager = _create_manager()
+
+        # Replace pending_transactions with a very short TTL cache
+        manager.pending_transactions = AsyncMemCache(
+            ttl=0.3, on_expire=manager.on_transaction_timeout, check_interval=0.1
+        )
+
+        # Mock receipt fetch to return None (dropped tx)
+        manager.w3.eth.get_transaction_receipt = AsyncMock(return_value=None)
+
+        txhash = "0xexpiry_test"
+        buy1 = _make_order("buy1")
+        manager.cloid_to_order["buy1"] = buy1
+        manager.txhash_to_sent_orders[txhash] = SentOrders(
+            buy_orders=[buy1], sell_orders=[], cancel_orders=[]
+        )
+
+        await manager.pending_transactions.start()
+        await manager.trade_events_cache.start()
+
+        # Add to pending cache — TTL starts now
+        await manager.pending_transactions.set(txhash, txhash)
+
+        # Wait for expiry + monitor check to fire
+        await asyncio.sleep(0.6)
+
+        # The callback should have marked the order as timed out
+        assert buy1.status == OrderStatus.ORDER_TIMEOUT
+
+        # Key should no longer be in the cache
+        result = await manager.pending_transactions.get(txhash)
+        assert result is None
+
+        await manager.close()
+
+    @pytest.mark.asyncio
+    async def test_delete_before_expiry_prevents_callback(self):
+        """Deleting a pending tx before TTL should NOT trigger on_transaction_timeout."""
+        manager = _create_manager()
+
+        manager.pending_transactions = AsyncMemCache(
+            ttl=0.3, on_expire=manager.on_transaction_timeout, check_interval=0.1
+        )
+
+        # Mock receipt — should never be called
+        manager.w3.eth.get_transaction_receipt = AsyncMock(return_value=None)
+
+        txhash = "0xdelete_before_expiry"
+        buy1 = _make_order("buy1")
+        manager.cloid_to_order["buy1"] = buy1
+        manager.txhash_to_sent_orders[txhash] = SentOrders(
+            buy_orders=[buy1], sell_orders=[], cancel_orders=[]
+        )
+
+        await manager.pending_transactions.start()
+        await manager.trade_events_cache.start()
+
+        await manager.pending_transactions.set(txhash, txhash)
+
+        # Delete before TTL expires (simulating happy-path event arrival)
+        await manager.pending_transactions.delete(txhash)
+
+        # Wait past the original TTL
+        await asyncio.sleep(0.6)
+
+        # Order should still be in its original SENT status
+        assert buy1.status == OrderStatus.ORDER_SENT
+
+        # Receipt should never have been fetched
+        manager.w3.eth.get_transaction_receipt.assert_not_called()
+
+        await manager.close()
+
+
 class TestBatchUpdateClearsPendingTx:
     """Tests for pending tx cache clearing on batch update."""
 

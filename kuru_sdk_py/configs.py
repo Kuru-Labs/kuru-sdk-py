@@ -33,6 +33,7 @@ from kuru_sdk_py.config_defaults import (
     DEFAULT_POST_ONLY,
     DEFAULT_AUTO_APPROVE,
     DEFAULT_USE_ACCESS_LIST,
+    DEFAULT_EXCHANGE_MARKET_DEPTH,
     DEFAULT_PENDING_TX_TTL,
     DEFAULT_TRADE_EVENTS_TTL,
     DEFAULT_CACHE_CHECK_INTERVAL,
@@ -137,6 +138,7 @@ class WebSocketConfig:
     reconnect_delay: float = DEFAULT_RECONNECT_DELAY
     heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL
     heartbeat_timeout: float = DEFAULT_HEARTBEAT_TIMEOUT
+    exchange_market_depth: str = DEFAULT_EXCHANGE_MARKET_DEPTH
     rpc_logs_subscription: str = DEFAULT_RPC_LOGS_SUBSCRIPTION
     rpc_ws_max_reconnect_attempts: int = DEFAULT_RPC_WS_MAX_RECONNECT_ATTEMPTS
     rpc_ws_reconnect_delay: float = DEFAULT_RPC_WS_RECONNECT_DELAY
@@ -645,6 +647,7 @@ class ConfigManager:
         reconnect_delay: Optional[float] = None,
         heartbeat_interval: Optional[float] = None,
         heartbeat_timeout: Optional[float] = None,
+        exchange_market_depth: Optional[str] = None,
         rpc_logs_subscription: Optional[str] = None,
         rpc_ws_max_reconnect_attempts: Optional[int] = None,
         rpc_ws_reconnect_delay: Optional[float] = None,
@@ -685,6 +688,7 @@ class ConfigManager:
         from kuru_sdk_py.config_defaults import (
             ENV_MAX_RECONNECT_ATTEMPTS, ENV_RECONNECT_DELAY,
             ENV_HEARTBEAT_INTERVAL, ENV_HEARTBEAT_TIMEOUT,
+            ENV_EXCHANGE_MARKET_DEPTH,
             ENV_RPC_LOGS_SUBSCRIPTION,
             ENV_RPC_WS_MAX_RECONNECT_ATTEMPTS, ENV_RPC_WS_RECONNECT_DELAY,
             ENV_RPC_WS_MAX_RECONNECT_DELAY,
@@ -703,6 +707,8 @@ class ConfigManager:
                 config_dict["heartbeat_interval"] = float(env_interval)
             if env_timeout := os.getenv(ENV_HEARTBEAT_TIMEOUT):
                 config_dict["heartbeat_timeout"] = float(env_timeout)
+            if env_depth := os.getenv(ENV_EXCHANGE_MARKET_DEPTH):
+                config_dict["exchange_market_depth"] = env_depth
             if env_sub := os.getenv(ENV_RPC_LOGS_SUBSCRIPTION):
                 env_sub = env_sub.strip()
                 if not env_sub:
@@ -730,6 +736,8 @@ class ConfigManager:
             config_dict["heartbeat_interval"] = heartbeat_interval
         if heartbeat_timeout is not None:
             config_dict["heartbeat_timeout"] = heartbeat_timeout
+        if exchange_market_depth is not None:
+            config_dict["exchange_market_depth"] = exchange_market_depth
         if rpc_logs_subscription is not None:
             rpc_logs_subscription = rpc_logs_subscription.strip()
             if not rpc_logs_subscription:

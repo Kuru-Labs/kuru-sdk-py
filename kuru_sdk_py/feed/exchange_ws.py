@@ -168,6 +168,7 @@ class ExchangeWebsocketClient:
         # Get reconnection parameters from config
         self._max_reconnect_attempts = websocket_config.max_reconnect_attempts
         self._reconnect_delay = websocket_config.reconnect_delay
+        self._market_depth = websocket_config.exchange_market_depth
 
         # Connection state
         self._websocket: Optional[websockets.asyncio.client.ClientConnection] = None
@@ -316,7 +317,7 @@ class ExchangeWebsocketClient:
             return
 
         # Build Binance-style subscription request
-        channel = f"{self._market_address}@depth"
+        channel = f"{self._market_address}@{self._market_depth}"
         request_dict = {"method": "SUBSCRIBE", "params": [channel], "id": 1}
 
         logger.info(f"Subscribing to channel: {channel}")
