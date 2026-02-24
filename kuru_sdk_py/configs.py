@@ -37,6 +37,8 @@ from kuru_sdk_py.config_defaults import (
     DEFAULT_PENDING_TX_TTL,
     DEFAULT_TRADE_EVENTS_TTL,
     DEFAULT_CACHE_CHECK_INTERVAL,
+    DEFAULT_RECONCILIATION_INTERVAL,
+    DEFAULT_RECONCILIATION_THRESHOLD,
 )
 
 # ============================================================================
@@ -176,10 +178,14 @@ class CacheConfig:
         pending_tx_ttl: Time before triggering timeout callback (seconds)
         trade_events_ttl: Time to cache orphaned trade events (seconds)
         check_interval: How often to check for expired cache keys (seconds)
+        reconciliation_interval: How often to scan for stuck ORDER_SENT orders (seconds)
+        reconciliation_threshold: Age before an ORDER_SENT order is reconciled (seconds)
     """
     pending_tx_ttl: float = DEFAULT_PENDING_TX_TTL
     trade_events_ttl: float = DEFAULT_TRADE_EVENTS_TTL
     check_interval: float = DEFAULT_CACHE_CHECK_INTERVAL
+    reconciliation_interval: float = DEFAULT_RECONCILIATION_INTERVAL
+    reconciliation_threshold: float = DEFAULT_RECONCILIATION_THRESHOLD
 
 
 # ============================================================================
@@ -813,6 +819,8 @@ class ConfigManager:
         pending_tx_ttl: Optional[float] = None,
         trade_events_ttl: Optional[float] = None,
         check_interval: Optional[float] = None,
+        reconciliation_interval: Optional[float] = None,
+        reconciliation_threshold: Optional[float] = None,
         auto_env: bool = False,  # Advanced users only
     ) -> CacheConfig:
         """
@@ -826,6 +834,8 @@ class ConfigManager:
             pending_tx_ttl: Time before triggering timeout callback (seconds)
             trade_events_ttl: Time to cache orphaned trade events (seconds)
             check_interval: How often to check for expired keys (seconds)
+            reconciliation_interval: How often to scan for stuck ORDER_SENT orders (seconds)
+            reconciliation_threshold: Age before an ORDER_SENT order is reconciled (seconds)
             auto_env: Automatically load from environment variables
 
         Returns:
@@ -840,7 +850,8 @@ class ConfigManager:
         """
         import os
         from kuru_sdk_py.config_defaults import (
-            ENV_PENDING_TX_TTL, ENV_TRADE_EVENTS_TTL, ENV_CACHE_CHECK_INTERVAL
+            ENV_PENDING_TX_TTL, ENV_TRADE_EVENTS_TTL, ENV_CACHE_CHECK_INTERVAL,
+            ENV_RECONCILIATION_INTERVAL, ENV_RECONCILIATION_THRESHOLD,
         )
 
         config_dict = {}
@@ -853,6 +864,10 @@ class ConfigManager:
                 config_dict["trade_events_ttl"] = float(env_events_ttl)
             if env_interval := os.getenv(ENV_CACHE_CHECK_INTERVAL):
                 config_dict["check_interval"] = float(env_interval)
+            if env_recon_interval := os.getenv(ENV_RECONCILIATION_INTERVAL):
+                config_dict["reconciliation_interval"] = float(env_recon_interval)
+            if env_recon_threshold := os.getenv(ENV_RECONCILIATION_THRESHOLD):
+                config_dict["reconciliation_threshold"] = float(env_recon_threshold)
 
         # Explicit arguments override
         if pending_tx_ttl is not None:
@@ -861,6 +876,10 @@ class ConfigManager:
             config_dict["trade_events_ttl"] = trade_events_ttl
         if check_interval is not None:
             config_dict["check_interval"] = check_interval
+        if reconciliation_interval is not None:
+            config_dict["reconciliation_interval"] = reconciliation_interval
+        if reconciliation_threshold is not None:
+            config_dict["reconciliation_threshold"] = reconciliation_threshold
 
         return CacheConfig(**config_dict)
 

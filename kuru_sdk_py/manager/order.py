@@ -79,6 +79,9 @@ class Order:
     # Optional: Filled after order is sent to blockchain
     txhash: Optional[str] = None
 
+    # Timestamp when order transitioned to ORDER_SENT (for reconciliation)
+    sent_timestamp: Optional[float] = None
+
     # Limit/Market order fields
     side: Optional[OrderSide] = None
     price: Optional[float] = None
@@ -99,6 +102,8 @@ class Order:
     def update_status(self, new_status: OrderStatus) -> None:
         """Update the order status"""
         self.status = new_status
+        if new_status == OrderStatus.ORDER_SENT:
+            self.sent_timestamp = time()
 
     def set_kuru_order_id(self, order_id: int) -> None:
         """

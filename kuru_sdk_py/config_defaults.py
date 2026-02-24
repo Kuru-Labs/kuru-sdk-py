@@ -434,6 +434,24 @@ Lower values = faster timeout detection but more CPU usage
 Higher values = less CPU usage but slower timeout detection
 """
 
+DEFAULT_RECONCILIATION_INTERVAL = 3.0
+"""
+How often (seconds) the reconciliation loop scans for stuck orders.
+
+The reconciliation loop periodically checks for orders stuck in
+ORDER_SENT state that were not caught by the normal TTL timeout
+(e.g., when BatchUpdateMM deletes the pending tx cache entry but
+some place orders in the batch failed silently).
+"""
+
+DEFAULT_RECONCILIATION_THRESHOLD = 5.0
+"""
+Age (seconds) before an ORDER_SENT order is considered stuck and reconciled.
+
+Orders younger than this threshold are skipped, allowing normal event
+processing to complete before reconciliation intervenes.
+"""
+
 # ============================================================================
 # INTERNAL CONSTANTS (not user-configurable)
 # ============================================================================
@@ -588,3 +606,9 @@ ENV_TRADE_EVENTS_TTL = "KURU_TRADE_EVENTS_TTL"
 
 ENV_CACHE_CHECK_INTERVAL = "KURU_CACHE_CHECK_INTERVAL"
 """Environment variable for cache expiration check interval (seconds)"""
+
+ENV_RECONCILIATION_INTERVAL = "KURU_RECONCILIATION_INTERVAL"
+"""Environment variable for reconciliation loop scan interval (seconds)"""
+
+ENV_RECONCILIATION_THRESHOLD = "KURU_RECONCILIATION_THRESHOLD"
+"""Environment variable for age threshold before reconciling stuck ORDER_SENT orders (seconds)"""

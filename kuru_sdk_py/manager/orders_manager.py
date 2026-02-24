@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from time import time
 from typing import Any, Callable, Optional
 from loguru import logger
 from web3 import AsyncWeb3, AsyncHTTPProvider
@@ -70,6 +71,13 @@ class OrdersManager:
         # Callback to process receipt logs when timeout fires on a confirmed tx
         self._receipt_processor: Optional[Callable] = None
 
+        # Reconciliation loop state
+        self._reconciliation_task: Optional[asyncio.Task] = None
+        self._reconciliation_running: bool = False
+        self._reconciliation_interval: float = 3.0
+        self._reconciliation_threshold: float = 5.0
+        self._reconciling_txhashes: set = set()
+
     @classmethod
     async def create(
         cls,
@@ -109,6 +117,10 @@ class OrdersManager:
         instance.trade_events_cache = AsyncMemCache(ttl=cache_config.trade_events_ttl)
         instance.processed_orders_queue = asyncio.Queue()
 
+        # Store reconciliation config
+        instance._reconciliation_interval = cache_config.reconciliation_interval
+        instance._reconciliation_threshold = cache_config.reconciliation_threshold
+
         return instance
 
     def set_receipt_processor(self, processor: Callable) -> None:
@@ -116,10 +128,14 @@ class OrdersManager:
         self._receipt_processor = processor
 
     async def start(self) -> None:
-        """Start background cache monitors for pending transactions and trade events."""
+        """Start background cache monitors and reconciliation loop."""
         await self.pending_transactions.start()
         await self.trade_events_cache.start()
-        logger.debug("OrdersManager cache monitors started")
+
+        self._reconciliation_running = True
+        self._reconciliation_task = asyncio.create_task(self._reconciliation_loop())
+
+        logger.debug("OrdersManager cache monitors and reconciliation loop started")
 
     async def on_transaction_timeout(self, txhash: str, value: Any) -> None:
         """Callback function to handle transaction timeout."""
@@ -227,24 +243,63 @@ class OrdersManager:
 
         return None
 
-    # async def on_order_expire(self, order_uid: str, order: Order) -> None:
-    #     """Callback function to handle order expiration."""
-    #     """Check the tx receipt from the rpc and update the order accordingly."""
-    #     txhash = order.txhash
-    #     if txhash is None:
-    #         logger.error(f"Transaction hash is not set for order {order.cloid}")
-    #         return
-    #     receipt = await self.w3.eth.get_transaction_receipt(txhash)
-    #     if receipt is None:
-    #         logger.error(f"Transaction receipt is not found for order {order.cloid}")
-    #         return
-    #     if receipt.status == 1:
-    #         order.update_status(OrderStatus.ORDER_PLACED)
-    #     else:
-    #         order.update_status(OrderStatus.ORDER_TIMEOUT)
-    #         logger.info(f"Order {order.cloid} timed out")
+    async def _reconciliation_loop(self) -> None:
+        """Background loop that scans for orders stuck in ORDER_SENT state.
 
-    #     await self._finalize_order_update(order)
+        Orders can get stuck when a batch transaction's BatchUpdateMM event fires
+        (clearing the pending_transactions cache entry) but some place orders in
+        the batch failed silently within the contract. This loop catches those
+        orphaned orders by calling on_transaction_timeout to fetch the receipt
+        and reconcile.
+        """
+        while self._reconciliation_running:
+            try:
+                await asyncio.sleep(self._reconciliation_interval)
+
+                now = time()
+                stuck_txhashes: dict[str, list[Order]] = {}
+
+                for order in list(self.cloid_to_order.values()):
+                    if order.status != OrderStatus.ORDER_SENT:
+                        continue
+
+                    # Skip orders without a sent_timestamp or txhash
+                    if order.sent_timestamp is None or order.txhash is None:
+                        continue
+
+                    # Skip orders younger than the threshold
+                    if (now - order.sent_timestamp) < self._reconciliation_threshold:
+                        continue
+
+                    # Skip orders whose txhash is still in pending_transactions
+                    # (normal TTL timeout path will handle those)
+                    if await self.pending_transactions.get(order.txhash) is not None:
+                        continue
+
+                    # Skip orders whose txhash is already being reconciled
+                    if order.txhash in self._reconciling_txhashes:
+                        continue
+
+                    stuck_txhashes.setdefault(order.txhash, []).append(order)
+
+                # Reconcile each stuck txhash once
+                for txhash in stuck_txhashes:
+                    self._reconciling_txhashes.add(txhash)
+                    try:
+                        logger.info(
+                            f"Reconciliation: processing stuck txhash {txhash[:10]}... "
+                            f"({len(stuck_txhashes[txhash])} stuck orders)"
+                        )
+                        await self.on_transaction_timeout(txhash, txhash)
+                    except Exception as e:
+                        logger.error(f"Reconciliation error for txhash {txhash}: {e}")
+                    finally:
+                        self._reconciling_txhashes.discard(txhash)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Reconciliation loop error: {e}")
 
     async def _cache_trade_event_for_missing_order(
         self, kuru_order_id: int, trade_event: TradeEvent
@@ -500,7 +555,17 @@ class OrdersManager:
         await self.pending_transactions.delete(txhash)
 
     async def close(self) -> None:
-        """Stop cache monitors and close the HTTP provider session."""
+        """Stop reconciliation loop, cache monitors, and close the HTTP provider session."""
+        # Stop reconciliation loop
+        self._reconciliation_running = False
+        if self._reconciliation_task is not None:
+            self._reconciliation_task.cancel()
+            try:
+                await self._reconciliation_task
+            except asyncio.CancelledError:
+                pass
+            self._reconciliation_task = None
+
         # Stop cache monitors
         try:
             await self.pending_transactions.stop()
