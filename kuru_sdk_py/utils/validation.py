@@ -6,7 +6,8 @@ ensuring consistency across all config classes and providing clear
 error messages when validation fails.
 """
 
-from typing import Any, Optional
+from decimal import Decimal
+from typing import Any, Optional, Union
 from web3 import Web3
 
 
@@ -129,7 +130,7 @@ def validate_required_field(value: Any, field_name: str) -> None:
 
 
 def validate_positive_number(
-    value: float,
+    value: Union[float, int, Decimal],
     field_name: str,
     allow_zero: bool = False,
     value_type: str = "number"
@@ -205,7 +206,7 @@ def validate_url_format(url: str, field_name: str = "url") -> None:
         )
 
 
-def validate_percentage(value: float, field_name: str) -> None:
+def validate_percentage(value: Union[float, int, Decimal], field_name: str) -> None:
     """
     Validate that a value is a valid percentage (0.0 to 100.0).
 
@@ -229,7 +230,7 @@ def validate_percentage(value: float, field_name: str) -> None:
         )
 
 
-def validate_multiplier(value: float, field_name: str, min_value: float = 1.0) -> None:
+def validate_multiplier(value: Union[float, int, Decimal], field_name: str, min_value: float = 1.0) -> None:
     """
     Validate that a multiplier is >= min_value (typically 1.0).
 

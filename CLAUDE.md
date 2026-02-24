@@ -76,7 +76,7 @@ Use `ConfigManager` to load configs from environment variables with defaults.
 ### Order Flow
 
 1. User creates `Order` objects with cloids (client order IDs)
-2. `OrdersExecutor` converts float prices/sizes to integers using precision settings
+2. `OrdersExecutor` converts Decimal prices/sizes to integers using precision settings
 3. Executor applies tick rounding based on `price_rounding` parameter
 4. Batch transaction sent to MM Entrypoint contract via EIP-7702 authorization
 5. `RpcWebsocket` receives on-chain events
@@ -98,13 +98,21 @@ Orders must be placed through the MM Entrypoint contract, which requires one-tim
 ### Margin Accounts
 Orders consume margin balances (via the margin account contract), NOT wallet balances. Users must deposit base/quote tokens before trading. Margin balances can be queried via `client.user.get_margin_balances()`.
 
+### Decimal Precision
+The SDK uses `decimal.Decimal` for all financial values (prices, sizes, amounts) to avoid float binary representation issues. Key details:
+- User-facing APIs accept `float | int | str | Decimal` via the `DecimalLike` type alias; inputs are coerced to `Decimal` internally using `to_decimal()` from `kuru_sdk_py/utils/decimal_utils.py`
+- `Order.__post_init__` auto-coerces `price`, `size`, and `min_amount_out` from float/int to `Decimal`, so existing code passing floats continues to work
+- All SDK outputs (prices, sizes, fills from WebSocket/events) are `Decimal`
+- Timing values (`timestamp`, `poll_latency`, TTLs, reconnect delays) remain `float` — they use `time.time()` and have no financial precision requirements
+- When converting to on-chain integers, use `int(decimal_value * Decimal(precision))` to maintain exactness
+
 ### Price/Size Precision
-- `price_precision` and `size_precision` are multipliers (e.g., 10^18) that convert floats to on-chain integers
+- `price_precision` and `size_precision` are multipliers (e.g., 10^18) that convert Decimals to on-chain integers
 - `tick_size` is the minimum price increment in integer units
 - The SDK handles conversion automatically, but price rounding behavior can be configured
 
 ### WebSocket Price Formatting
-Both WebSocket clients (`KuruFrontendOrderbookClient` and `ExchangeWebsocketClient`) pre-normalize prices and sizes to human-readable floats before placing data on the queue. No manual conversion is needed when consuming updates from the queue.
+Both WebSocket clients (`KuruFrontendOrderbookClient` and `ExchangeWebsocketClient`) pre-normalize prices and sizes to human-readable `Decimal` values before placing data on the queue. No manual conversion is needed when consuming updates from the queue.
 
 ### Access List Optimization
 Enable `KURU_USE_ACCESS_LIST=true` to use EIP-2930 access lists, which can reduce gas costs by pre-declaring storage access patterns.
@@ -126,6 +134,7 @@ When writing tests:
 5. **Ignoring tick size**: Prices that don't align to tick size will cause transaction reverts
 6. **Mixing up price formats**: WebSocket prices are always 10^18, API/on-chain prices use market precision
 7. **Using `pip` instead of `uv`**: This project requires `uv` for dependency management
+8. **Using `float` for financial values**: Always use `Decimal` for prices, sizes, and amounts. Use `to_decimal()` from `kuru_sdk_py/utils/decimal_utils` to convert user inputs. Never use `float()` for financial arithmetic — `Decimal(str(value))` avoids binary representation errors
 
 ## File Organization
 
@@ -152,6 +161,7 @@ kuru_sdk_py/
 │   └── access_list.py     # EIP-2930 access list generation
 ├── utils/                 # Shared utilities
 │   ├── async_mem_cache.py # In-memory cache with TTL
+│   ├── decimal_utils.py   # Decimal conversion (to_decimal, DecimalLike)
 │   ├── validation.py      # Input validation
 │   └── errors.py          # Error handling
 └── abis/                  # Contract ABIs (JSON files)

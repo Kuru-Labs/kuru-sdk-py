@@ -1,5 +1,6 @@
 import asyncio
 import signal
+from decimal import Decimal
 from typing import Optional, Callable, Awaitable
 from loguru import logger
 
@@ -430,7 +431,7 @@ class KuruClient:
             ):
                 # Convert price to integer using market precision
                 price_int = int(
-                    original_order.price * self.market_config.price_precision
+                    original_order.price * Decimal(self.market_config.price_precision)
                 )
                 is_buy = original_order.side == OrderSide.BUY
 
@@ -477,8 +478,8 @@ class KuruClient:
 
     async def place_market_buy(
         self,
-        quote_amount: float,
-        min_amount_out: float,
+        quote_amount: Decimal,
+        min_amount_out: Decimal,
         is_margin: bool = True,
         is_fill_or_kill: bool = False,
     ) -> str:
@@ -508,8 +509,8 @@ class KuruClient:
 
     async def place_market_sell(
         self,
-        size: float,
-        min_amount_out: float,
+        size: Decimal,
+        min_amount_out: Decimal,
         is_margin: bool = True,
         is_fill_or_kill: bool = False,
     ) -> str:

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from loguru import logger
 from web3 import AsyncWeb3, AsyncHTTPProvider
 from web3.contract import AsyncContract
@@ -140,10 +141,10 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         buy_cloids: list[bytes],
         sell_cloids: list[bytes],
         cancel_cloids: list[bytes],
-        buy_prices: list[float],
-        buy_sizes: list[float],
-        sell_prices: list[float],
-        sell_sizes: list[float],
+        buy_prices: list[Decimal],
+        buy_sizes: list[Decimal],
+        sell_prices: list[Decimal],
+        sell_sizes: list[Decimal],
         order_ids_to_cancel: list[int],
         orders_to_cancel_metadata: list[tuple[int, int, bool]],
         post_only: bool,
@@ -203,19 +204,20 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
                 f"{len(sell_cloids)} != {len(sell_sizes)}"
             )
 
-        # Convert float prices/sizes to integers using precision multipliers
-        # Using int() for truncation (round down)
+        # Convert Decimal prices/sizes to integers using precision multipliers
+        price_precision = Decimal(self.market_config.price_precision)
+        size_precision = Decimal(self.market_config.size_precision)
         buy_prices_int = [
-            int(price * self.market_config.price_precision) for price in buy_prices
+            int(price * price_precision) for price in buy_prices
         ]
         buy_sizes_int = [
-            int(size * self.market_config.size_precision) for size in buy_sizes
+            int(size * size_precision) for size in buy_sizes
         ]
         sell_prices_int = [
-            int(price * self.market_config.price_precision) for price in sell_prices
+            int(price * price_precision) for price in sell_prices
         ]
         sell_sizes_int = [
-            int(size * self.market_config.size_precision) for size in sell_sizes
+            int(size * size_precision) for size in sell_sizes
         ]
 
         # Apply tick-size rounding to prices
@@ -354,8 +356,8 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
 
     async def place_market_buy(
         self,
-        quote_amount: float,
-        min_amount_out: float,
+        quote_amount: Decimal,
+        min_amount_out: Decimal,
         is_margin: bool = True,
         is_fill_or_kill: bool = False,
     ) -> str:
@@ -379,12 +381,12 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
             - quote_amount uses 10^quote_token_decimals
             - min_amount_out uses 10^base_token_decimals
         """
-        # Convert float amounts to integers using token decimals
+        # Convert Decimal amounts to integers using token decimals
         quote_amount_int = int(
-            quote_amount * (10**self.market_config.quote_token_decimals)
+            quote_amount * Decimal(10**self.market_config.quote_token_decimals)
         )
         min_amount_out_int = int(
-            min_amount_out * (10**self.market_config.base_token_decimals)
+            min_amount_out * Decimal(10**self.market_config.base_token_decimals)
         )
 
         # Log the operation
@@ -408,8 +410,8 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
 
     async def place_market_sell(
         self,
-        size: float,
-        min_amount_out: float,
+        size: Decimal,
+        min_amount_out: Decimal,
         is_margin: bool = True,
         is_fill_or_kill: bool = False,
     ) -> str:
@@ -433,10 +435,10 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
             - size uses size_precision
             - min_amount_out uses 10^quote_token_decimals
         """
-        # Convert float amounts to integers
-        size_int = int(size * self.market_config.size_precision)
+        # Convert Decimal amounts to integers
+        size_int = int(size * Decimal(self.market_config.size_precision))
         min_amount_out_int = int(
-            min_amount_out * (10**self.market_config.quote_token_decimals)
+            min_amount_out * Decimal(10**self.market_config.quote_token_decimals)
         )
 
         # Log the operation

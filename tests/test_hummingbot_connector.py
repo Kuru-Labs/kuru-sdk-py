@@ -221,26 +221,26 @@ class TestFillComputation:
         )
 
         # First callback: 1 fill
-        sdk_order.filled_sizes = [3.0]
+        sdk_order.filled_sizes = [Decimal("3.0")]
         reported = 0
         new = sdk_order.filled_sizes[reported:]
-        assert new == [3.0]
+        assert new == [Decimal("3.0")]
         reported += len(new)
 
         # Second callback: 2 fills total
-        sdk_order.filled_sizes = [3.0, 4.0]
+        sdk_order.filled_sizes = [Decimal("3.0"), Decimal("4.0")]
         new = sdk_order.filled_sizes[reported:]
-        assert new == [4.0]
+        assert new == [Decimal("4.0")]
         reported += len(new)
 
         # Third callback: 3 fills total (fully filled)
-        sdk_order.filled_sizes = [3.0, 4.0, 3.0]
+        sdk_order.filled_sizes = [Decimal("3.0"), Decimal("4.0"), Decimal("3.0")]
         new = sdk_order.filled_sizes[reported:]
-        assert new == [3.0]
+        assert new == [Decimal("3.0")]
         reported += len(new)
 
         assert reported == 3
-        assert sum(sdk_order.filled_sizes) == 10.0
+        assert sum(sdk_order.filled_sizes) == Decimal("10.0")
 
 
 # ============================================================================
@@ -365,30 +365,30 @@ class TestWebSocketFormatting:
     """Tests for frontend orderbook WebSocket price/size formatting."""
 
     def test_format_websocket_price(self):
-        """WS prices in 10^18 format should convert to readable decimals."""
+        """WS prices in 10^18 format should convert to readable Decimals."""
         raw = 241_470_000_000_000_000_000
         price = KuruFrontendOrderbookClient.format_websocket_price(raw)
-        assert abs(price - 241.47) < 1e-10
+        assert price == Decimal("241.47")
 
     def test_format_websocket_size(self):
         """WS sizes should convert using market size_precision."""
         raw = 100_000_000_000
         size = KuruFrontendOrderbookClient.format_websocket_size(raw, 10_000_000_000)
-        assert abs(size - 10.0) < 1e-10
+        assert size == Decimal("10")
 
     def test_format_zero_price(self):
-        assert KuruFrontendOrderbookClient.format_websocket_price(0) == 0.0
+        assert KuruFrontendOrderbookClient.format_websocket_price(0) == Decimal(0)
 
     def test_format_zero_size(self):
         assert (
-            KuruFrontendOrderbookClient.format_websocket_size(0, 10_000_000_000) == 0.0
+            KuruFrontendOrderbookClient.format_websocket_size(0, 10_000_000_000) == Decimal(0)
         )
 
     def test_small_price(self):
         """Very small prices should still convert correctly."""
         raw = 1_000_000_000_000_000  # 0.001
         price = KuruFrontendOrderbookClient.format_websocket_price(raw)
-        assert abs(price - 0.001) < 1e-15
+        assert price == Decimal("0.001")
 
 
 # ============================================================================
@@ -400,28 +400,28 @@ class TestOrderbookUpdateConversion:
     """Tests for converting FrontendOrderbookUpdate to orderbook data."""
 
     def test_bids_asks_conversion(self):
-        """FrontendOrderbookUpdate bids/asks are pre-normalized floats."""
+        """FrontendOrderbookUpdate bids/asks are pre-normalized Decimals."""
         update = FrontendOrderbookUpdate(
             events=[],
             b=[
-                (10.0, 5.0),
-                (9.5, 3.0),
+                (Decimal("10.0"), Decimal("5.0")),
+                (Decimal("9.5"), Decimal("3.0")),
             ],
             a=[
-                (10.5, 2.0),
-                (11.0, 4.0),
+                (Decimal("10.5"), Decimal("2.0")),
+                (Decimal("11.0"), Decimal("4.0")),
             ],
         )
 
-        # Values are already human-readable floats
+        # Values are already human-readable Decimals
         assert len(update.b) == 2
-        assert abs(update.b[0][0] - 10.0) < 1e-10
-        assert abs(update.b[0][1] - 5.0) < 1e-10
-        assert abs(update.b[1][0] - 9.5) < 1e-10
+        assert update.b[0][0] == Decimal("10.0")
+        assert update.b[0][1] == Decimal("5.0")
+        assert update.b[1][0] == Decimal("9.5")
 
         assert len(update.a) == 2
-        assert abs(update.a[0][0] - 10.5) < 1e-10
-        assert abs(update.a[1][0] - 11.0) < 1e-10
+        assert update.a[0][0] == Decimal("10.5")
+        assert update.a[1][0] == Decimal("11.0")
 
     def test_trade_event_extraction(self):
         """Trade events should be identifiable by event type 'Trade'."""
@@ -430,8 +430,8 @@ class TestOrderbookUpdateConversion:
                 e="Trade",
                 ts=1000,
                 mad="0xabc",
-                p=10.0,
-                s=0.5,
+                p=Decimal("10.0"),
+                s=Decimal("0.5"),
                 ib=True,
                 t="0xtaker",
                 m="0xmaker",
@@ -440,15 +440,15 @@ class TestOrderbookUpdateConversion:
                 e="OrderCreated",
                 ts=1001,
                 mad="0xabc",
-                p=11.0,
-                s=0.3,
+                p=Decimal("11.0"),
+                s=Decimal("0.3"),
                 ib=False,
             ),
         ]
 
         trade_events = [e for e in events if e.e == "Trade"]
         assert len(trade_events) == 1
-        assert abs(trade_events[0].p - 10.0) < 1e-10
+        assert trade_events[0].p == Decimal("10.0")
 
     def test_empty_orderbook_update(self):
         """Updates with no bids/asks should be handled gracefully."""

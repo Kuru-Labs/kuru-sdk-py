@@ -16,6 +16,7 @@ Price Source: Coinbase MON-USD spot price
 import sys
 from pathlib import Path
 import asyncio
+from decimal import Decimal
 import signal
 import os
 import time
@@ -36,22 +37,22 @@ from kuru_sdk_py.configs import ConfigManager
 # ============================================================================
 
 COINBASE_API_URL = "https://api.coinbase.com/v2/prices/MON-USD/spot"
-BPS_INCREMENT = 0.1  # 10 basis points per level
+BPS_INCREMENT = Decimal("0.1")  # 10 basis points per level
 UPDATE_INTERVAL = 6.0  # seconds
-ORDER_SIZE = 200.0  # MON per order (~$2 per order at $0.02)
+ORDER_SIZE = Decimal("200")  # MON per order (~$2 per order at $0.02)
 
 
 # ============================================================================
 # Helper Functions
 # ============================================================================
 
-async def get_mon_price() -> float:
+async def get_mon_price() -> Decimal:
     """Fetch current MON price from Coinbase API."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(COINBASE_API_URL) as response:
                 data = await response.json()
-                return float(data["data"]["amount"])
+                return Decimal(data["data"]["amount"])
     except Exception as e:
         logger.error(f"Error fetching MON price from Coinbase: {e}")
         raise
@@ -157,8 +158,8 @@ async def main():
         logger.success(f"Connected to market: {market_config.market_symbol}")
 
         # Check margin balances first
-        base_deposit_amount = float(os.getenv("BASE_DEPOSIT_AMOUNT", "600"))
-        quote_deposit_amount = float(os.getenv("QUOTE_DEPOSIT_AMOUNT", "15"))
+        base_deposit_amount = Decimal(os.getenv("BASE_DEPOSIT_AMOUNT", "600"))
+        quote_deposit_amount = Decimal(os.getenv("QUOTE_DEPOSIT_AMOUNT", "15"))
 
         margin_base_wei, margin_quote_wei = await client.user.get_margin_balances()
         margin_base = float(margin_base_wei) / (10 ** market_config.base_token_decimals)

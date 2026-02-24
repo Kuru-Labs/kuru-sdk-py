@@ -12,6 +12,7 @@ This example demonstrates:
 import sys
 from pathlib import Path
 import asyncio
+from decimal import Decimal
 import signal
 import os
 from loguru import logger
@@ -57,11 +58,11 @@ async def main():
     )
 
     # Get configuration from environment
-    taker_base_deposit = float(os.getenv("TAKER_BASE_DEPOSIT", "50"))
-    taker_quote_deposit = float(os.getenv("TAKER_QUOTE_DEPOSIT", "500"))
+    taker_base_deposit = Decimal(os.getenv("TAKER_BASE_DEPOSIT", "50"))
+    taker_quote_deposit = Decimal(os.getenv("TAKER_QUOTE_DEPOSIT", "500"))
     trade_interval = float(os.getenv("TRADE_INTERVAL", "5"))
-    market_buy_quote_amount = float(os.getenv("MARKET_BUY_QUOTE_AMOUNT", "10"))
-    market_sell_size = float(os.getenv("MARKET_SELL_SIZE", "5"))
+    market_buy_quote_amount = Decimal(os.getenv("MARKET_BUY_QUOTE_AMOUNT", "10"))
+    market_sell_size = Decimal(os.getenv("MARKET_SELL_SIZE", "5"))
 
     # Create client
     logger.info("Creating KuruClient for taker bot...")
@@ -124,7 +125,7 @@ async def main():
                 # Calculate minimum amount out with 5% slippage tolerance
                 # Assuming base price, we can set a conservative min_amount_out
                 # For simplicity, using 0 (no slippage protection) or a small fixed value
-                min_base_amount = 0  # Can be adjusted based on expected price
+                min_base_amount = Decimal(0)  # Can be adjusted based on expected price
 
                 logger.info(
                     f"Placing market BUY: quote_amount={market_buy_quote_amount}, "
@@ -161,7 +162,7 @@ async def main():
             # Place market sell order
             try:
                 # Calculate minimum amount out with 5% slippage tolerance
-                min_quote_amount = 0  # Can be adjusted based on expected price
+                min_quote_amount = Decimal(0)  # Can be adjusted based on expected price
 
                 logger.info(
                     f"Placing market SELL: size={market_sell_size}, "

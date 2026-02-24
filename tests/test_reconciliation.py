@@ -1,6 +1,7 @@
 """Tests for periodic reconciliation of stuck ORDER_SENT orders."""
 
 import asyncio
+from decimal import Decimal
 from time import time
 from unittest.mock import AsyncMock, MagicMock
 

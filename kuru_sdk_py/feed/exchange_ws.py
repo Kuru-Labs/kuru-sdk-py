@@ -1,6 +1,7 @@
 import asyncio
 import json
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Callable, List, Optional, Tuple, Union
 
 import websockets.asyncio.client
@@ -10,6 +11,7 @@ from loguru import logger
 from kuru_sdk_py.configs import MarketConfig, WebSocketConfig
 from kuru_sdk_py.utils.ws_utils import calculate_backoff_delay, format_reconnect_attempts
 
+PRICE_PRECISION_DECIMAL = Decimal(1_000_000_000_000_000_000)
 
 # === DATACLASSES ===
 
@@ -36,8 +38,8 @@ class DepthUpdate:
     s: str  # Symbol (market address)
     U: int  # First update ID
     u: int  # Final update ID
-    b: List[Tuple[float, float]]  # Bids: [(price, size), ...]
-    a: List[Tuple[float, float]]  # Asks: [(price, size), ...]
+    b: List[Tuple[Decimal, Decimal]]  # Bids: [(price, size), ...]
+    a: List[Tuple[Decimal, Decimal]]  # Asks: [(price, size), ...]
 
 
 @dataclass
@@ -68,8 +70,8 @@ class MonadDepthUpdate:
     blockId: str  # Block hash
     U: int
     u: int
-    b: List[Tuple[float, float]]
-    a: List[Tuple[float, float]]
+    b: List[Tuple[Decimal, Decimal]]
+    a: List[Tuple[Decimal, Decimal]]
 
 
 # === MAIN CLIENT CLASS ===
@@ -196,9 +198,9 @@ class ExchangeWebsocketClient:
         )
 
     @staticmethod
-    def format_price(price_str: str) -> float:
+    def format_price(price_str: str) -> Decimal:
         """
-        Convert U256 price string to human-readable decimal.
+        Convert U256 price string to human-readable Decimal.
 
         Note: Queue data is now pre-normalized. This method is only needed
         if you are working with raw WebSocket data outside the client.
@@ -207,18 +209,18 @@ class ExchangeWebsocketClient:
             price_str: Price as U256 string (e.g., "241470000000000000000")
 
         Returns:
-            Human-readable price as float (e.g., 241.47)
+            Human-readable price as Decimal (e.g., Decimal('241.47'))
 
         Example:
             >>> ExchangeWebsocketClient.format_price("241470000000000000000")
-            241.47
+            Decimal('241.47')
         """
-        return int(price_str) / 1_000_000_000_000_000_000
+        return Decimal(int(price_str)) / PRICE_PRECISION_DECIMAL
 
     @staticmethod
-    def format_size(size_str: str, size_precision: int) -> float:
+    def format_size(size_str: str, size_precision: int) -> Decimal:
         """
-        Convert U256 size string to human-readable decimal.
+        Convert U256 size string to human-readable Decimal.
 
         Note: Queue data is now pre-normalized. This method is only needed
         if you are working with raw WebSocket data outside the client.
@@ -228,13 +230,13 @@ class ExchangeWebsocketClient:
             size_precision: Market's size precision divisor (from MarketConfig)
 
         Returns:
-            Human-readable size as float (e.g., 10.0)
+            Human-readable size as Decimal (e.g., Decimal('1'))
 
         Example:
             >>> ExchangeWebsocketClient.format_size("10000000000", 10000000000)
-            1.0
+            Decimal('1')
         """
-        return int(size_str) / size_precision
+        return Decimal(int(size_str)) / Decimal(size_precision)
 
     async def connect(self) -> None:
         """
@@ -597,6 +599,7 @@ class ExchangeWebsocketClient:
             import time
             event_time = int(data.get("E", int(time.time() * 1000)))
 
+            size_precision_decimal = Decimal(self._market_config.size_precision)
             update = DepthUpdate(
                 e=data["e"],
                 E=event_time,
@@ -604,11 +607,11 @@ class ExchangeWebsocketClient:
                 U=int(data.get("U", 0)),  # Default to 0 if not provided
                 u=int(data.get("u", 0)),  # Default to 0 if not provided
                 b=[
-                    (int(bid[0]) / 1_000_000_000_000_000_000, int(bid[1]) / self._market_config.size_precision)
+                    (Decimal(int(bid[0])) / PRICE_PRECISION_DECIMAL, Decimal(int(bid[1])) / size_precision_decimal)
                     for bid in data.get("b", [])
                 ],
                 a=[
-                    (int(ask[0]) / 1_000_000_000_000_000_000, int(ask[1]) / self._market_config.size_precision)
+                    (Decimal(int(ask[0])) / PRICE_PRECISION_DECIMAL, Decimal(int(ask[1])) / size_precision_decimal)
                     for ask in data.get("a", [])
                 ],
             )
@@ -655,6 +658,7 @@ class ExchangeWebsocketClient:
             import time
             event_time = int(data.get("E", int(time.time() * 1000)))
 
+            size_precision_decimal = Decimal(self._market_config.size_precision)
             update = MonadDepthUpdate(
                 e=data["e"],
                 E=event_time,
@@ -665,11 +669,11 @@ class ExchangeWebsocketClient:
                 U=int(data.get("U", 0)),
                 u=int(data.get("u", 0)),
                 b=[
-                    (int(bid[0]) / 1_000_000_000_000_000_000, int(bid[1]) / self._market_config.size_precision)
+                    (Decimal(int(bid[0])) / PRICE_PRECISION_DECIMAL, Decimal(int(bid[1])) / size_precision_decimal)
                     for bid in data.get("b", [])
                 ],
                 a=[
-                    (int(ask[0]) / 1_000_000_000_000_000_000, int(ask[1]) / self._market_config.size_precision)
+                    (Decimal(int(ask[0])) / PRICE_PRECISION_DECIMAL, Decimal(int(ask[1])) / size_precision_decimal)
                     for ask in data.get("a", [])
                 ],
             )

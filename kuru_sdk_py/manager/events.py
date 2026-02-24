@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Optional
 
 
@@ -19,7 +20,7 @@ class OrderCreatedEvent:
 
     order_id: int  # uint40
     owner: str  # address
-    size: float
+    size: Decimal
     price: int 
     is_buy: bool
 
@@ -90,10 +91,10 @@ class TradeEvent:
     maker_address: str  # address
     is_buy: bool
     price: int  # uint256
-    updated_size: float  # uint96
+    updated_size: Decimal  # uint96
     taker_address: str  # address
     tx_origin: str  # address
-    filled_size: float  # uint96
+    filled_size: Decimal  # uint96
 
     txhash: Optional[str] = None
 

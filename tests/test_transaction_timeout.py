@@ -1,6 +1,7 @@
 """Tests for transaction timeout recovery and receipt fallback."""
 
 import asyncio
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -341,7 +342,7 @@ class TestBatchUpdateClearsPendingTx:
         order_created = OrderCreatedEvent(
             order_id=42,
             owner="0x1234567890",
-            size=1.0,
+            size=Decimal("1"),
             price=100,
             is_buy=True,
             txhash=txhash,

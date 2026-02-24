@@ -7,7 +7,7 @@ and stream real-time orderbook updates in Binance-compatible format.
 The exchange WebSocket provides:
 - Binary WebSocket messages (JSON serialized to bytes)
 - Binance-style depth updates
-- Pre-normalized float prices and sizes
+- Pre-normalized Decimal prices and sizes
 - Optional Monad-enhanced updates with blockchain state
 
 IMPORTANT - Delta updates vs. full snapshots:
@@ -122,7 +122,7 @@ async def main():
             print(f"   Event time: {update.E} ms")
             print(f"   Update IDs: {update.U} - {update.u}")
 
-            # Print orderbook if available (prices and sizes are pre-normalized floats)
+            # Print orderbook if available (prices and sizes are pre-normalized Decimals)
             if update.b and update.a:
                 asks = sorted(
                     update.a,

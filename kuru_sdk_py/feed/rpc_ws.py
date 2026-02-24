@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 from typing import Callable, Optional
 from loguru import logger
 from web3 import AsyncWeb3, Web3
@@ -571,7 +572,7 @@ class RpcWebsocket:
             event = OrderCreatedEvent(
                 order_id=args["orderId"],
                 owner=args["owner"],
-                size=float(args["size"] / self.size_precision),
+                size=Decimal(args["size"]) / Decimal(self.size_precision),
                 price=args["price"],
                 is_buy=args["isBuy"],
                 txhash=txhash,
@@ -609,10 +610,10 @@ class RpcWebsocket:
                 maker_address=args["makerAddress"],
                 is_buy=args["isBuy"],
                 price=args["price"],
-                updated_size=float(args["updatedSize"] / self.size_precision),
+                updated_size=Decimal(args["updatedSize"]) / Decimal(self.size_precision),
                 taker_address=args["takerAddress"],
                 tx_origin=args["txOrigin"],
-                filled_size=float(args["filledSize"] / self.size_precision),
+                filled_size=Decimal(args["filledSize"]) / Decimal(self.size_precision),
                 txhash=txhash,
             )
             await self.orders_manager.on_trade(event)

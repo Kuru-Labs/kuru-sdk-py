@@ -1,8 +1,11 @@
+from decimal import Decimal
 from loguru import logger
 from web3 import Web3, AsyncWeb3, AsyncHTTPProvider
 from web3.contract import Contract, AsyncContract
 from typing import Optional
 import requests
+
+from kuru_sdk_py.utils.decimal_utils import to_decimal, DecimalLike
 
 from kuru_sdk_py.configs import (
     MarketConfig,
@@ -123,12 +126,12 @@ class User(AsyncTransactionSenderMixin):
 
     # Conversion helper methods
 
-    def _convert_base_amount(self, amount: float) -> int:
+    def _convert_base_amount(self, amount: DecimalLike) -> int:
         """
-        Convert float amount to base token integer value based on decimals.
+        Convert amount to base token integer value based on decimals.
 
         Args:
-            amount: Human-readable amount as float (e.g., 0.1, 1.0)
+            amount: Human-readable amount (float, int, str, or Decimal)
 
         Returns:
             Integer amount in token's smallest unit (wei equivalent)
@@ -138,14 +141,14 @@ class User(AsyncTransactionSenderMixin):
             0.1 -> 100000000000000000 (10^17)
             1.0 -> 1000000000000000000 (10^18)
         """
-        return int(amount * (10**self.base_token_decimals))
+        return int(to_decimal(amount) * Decimal(10**self.base_token_decimals))
 
-    def _convert_quote_amount(self, amount: float) -> int:
+    def _convert_quote_amount(self, amount: DecimalLike) -> int:
         """
-        Convert float amount to quote token integer value based on decimals.
+        Convert amount to quote token integer value based on decimals.
 
         Args:
-            amount: Human-readable amount as float (e.g., 0.1, 1.0)
+            amount: Human-readable amount (float, int, str, or Decimal)
 
         Returns:
             Integer amount in token's smallest unit (wei equivalent)
@@ -155,7 +158,7 @@ class User(AsyncTransactionSenderMixin):
             0.1 -> 100000 (10^5)
             1.0 -> 1000000 (10^6)
         """
-        return int(amount * (10**self.quote_token_decimals))
+        return int(to_decimal(amount) * Decimal(10**self.quote_token_decimals))
 
     # Balance query methods
 
@@ -497,7 +500,7 @@ class User(AsyncTransactionSenderMixin):
 
     # Deposit methods
 
-    async def deposit_base(self, amount: float, auto_approve: bool = True) -> str:
+    async def deposit_base(self, amount: DecimalLike, auto_approve: bool = True) -> str:
         """
         Deposit base tokens to margin account.
 
@@ -583,7 +586,7 @@ class User(AsyncTransactionSenderMixin):
 
         return tx_hash
 
-    async def deposit_quote(self, amount: float, auto_approve: bool = True) -> str:
+    async def deposit_quote(self, amount: DecimalLike, auto_approve: bool = True) -> str:
         """
         Deposit quote tokens to margin account.
 
@@ -671,7 +674,7 @@ class User(AsyncTransactionSenderMixin):
 
     # Withdraw methods
 
-    async def withdraw_base(self, amount: float) -> str:
+    async def withdraw_base(self, amount: DecimalLike) -> str:
         """
         Withdraw base tokens from margin account.
 
@@ -707,7 +710,7 @@ class User(AsyncTransactionSenderMixin):
 
         return tx_hash
 
-    async def withdraw_quote(self, amount: float) -> str:
+    async def withdraw_quote(self, amount: DecimalLike) -> str:
         """
         Withdraw quote tokens from margin account.
 

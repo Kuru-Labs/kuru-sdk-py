@@ -23,6 +23,7 @@ Optional environment variables:
 import sys
 from pathlib import Path
 import asyncio
+from decimal import Decimal
 import signal
 import os
 from loguru import logger
@@ -94,8 +95,8 @@ async def main():
         await client.start()
 
         # Deposit base and quote assets to margin account
-        base_deposit_amount = float(os.getenv("BASE_DEPOSIT_AMOUNT", "100"))  # Default: 100 base tokens
-        quote_deposit_amount = float(os.getenv("QUOTE_DEPOSIT_AMOUNT", "1000"))  # Default: 1000 quote tokens
+        base_deposit_amount = Decimal(os.getenv("BASE_DEPOSIT_AMOUNT", "100"))  # Default: 100 base tokens
+        quote_deposit_amount = Decimal(os.getenv("QUOTE_DEPOSIT_AMOUNT", "1000"))  # Default: 1000 quote tokens
 
         logger.info(f"Depositing {base_deposit_amount} base tokens to margin account...")
         base_tx = await client.user.deposit_base(base_deposit_amount, auto_approve=True)

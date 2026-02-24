@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 from loguru import logger
 import asyncio
+from decimal import Decimal
 import os
 from typing import List, Tuple, Optional
 from datetime import datetime
@@ -85,9 +86,9 @@ def format_event(event: FrontendEvent, market_config: MarketConfig) -> str:
 
 
 def calculate_spread(
-    bids: Optional[List[Tuple[float, float]]],
-    asks: Optional[List[Tuple[float, float]]]
-) -> Tuple[Optional[float], Optional[float]]:
+    bids: Optional[List[Tuple[Decimal, Decimal]]],
+    asks: Optional[List[Tuple[Decimal, Decimal]]]
+) -> Tuple[Optional[Decimal], Optional[Decimal]]:
     """
     Calculate orderbook spread.
 

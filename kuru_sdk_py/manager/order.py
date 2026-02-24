@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 from typing import Optional
 from time import time
+
+from kuru_sdk_py.utils.decimal_utils import to_decimal
 
 # Import for type hints in update_order_on_trade
 from typing import TYPE_CHECKING
@@ -84,12 +87,12 @@ class Order:
 
     # Limit/Market order fields
     side: Optional[OrderSide] = None
-    price: Optional[float] = None
-    size: Optional[float] = None
+    price: Optional[Decimal] = None
+    size: Optional[Decimal] = None
     post_only: Optional[bool] = True
 
     # Market order specific fields
-    min_amount_out: Optional[float] = None
+    min_amount_out: Optional[Decimal] = None
     is_margin: Optional[bool] = None
     is_fill_or_kill: Optional[bool] = None
 
@@ -97,7 +100,15 @@ class Order:
     order_ids_to_cancel: Optional[list[int]] = None
 
     # Fill tracking - list of all fill amounts from trade events
-    filled_sizes: list[float] = field(default_factory=list)
+    filled_sizes: list[Decimal] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.price is not None and not isinstance(self.price, Decimal):
+            self.price = to_decimal(self.price)
+        if self.size is not None and not isinstance(self.size, Decimal):
+            self.size = to_decimal(self.size)
+        if self.min_amount_out is not None and not isinstance(self.min_amount_out, Decimal):
+            self.min_amount_out = to_decimal(self.min_amount_out)
 
     def update_status(self, new_status: OrderStatus) -> None:
         """Update the order status"""
@@ -134,7 +145,7 @@ class Order:
         self.filled_sizes.append(trade_event.filled_size)
 
         if trade_event.updated_size == 0:
-            self.size = 0
+            self.size = Decimal(0)
             self.update_status(OrderStatus.ORDER_FULLY_FILLED)
         else:
             if trade_event.updated_size < self.size:
@@ -142,9 +153,9 @@ class Order:
                 self.update_status(OrderStatus.ORDER_PARTIALLY_FILLED)
 
     @property
-    def total_filled_size(self) -> float:
+    def total_filled_size(self) -> Decimal:
         """Calculate total filled size across all fills."""
-        return sum(self.filled_sizes)
+        return sum(self.filled_sizes, Decimal(0))
 
     def __repr__(self) -> str:
         """String representation of the order"""
