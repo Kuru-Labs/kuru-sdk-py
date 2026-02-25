@@ -96,6 +96,19 @@ class AsyncMemCache:
                 return self._cache[key]
             return None
 
+    async def peek(self, key: str) -> Optional[dict]:
+        """
+        Retrieve a dictionary from the cache without extending TTL.
+
+        Args:
+            key: The cache key to retrieve
+
+        Returns:
+            The cached dictionary if found, None otherwise
+        """
+        async with self._lock:
+            return self._cache.get(key)
+
     async def delete(self, key: str) -> bool:
         """
         Manually remove a dictionary from the cache.

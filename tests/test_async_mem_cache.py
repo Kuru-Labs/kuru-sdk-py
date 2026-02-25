@@ -350,3 +350,47 @@ class TestAsyncMemCache:
 
             # Callback should not have been called
             assert len(callback_called) == 0
+
+    @pytest.mark.asyncio
+    async def test_peek_returns_value_without_extending_ttl(self):
+        """peek() should not extend TTL."""
+        callback_called = []
+
+        async def on_expire(key: str, value: dict):
+            callback_called.append((key, value))
+
+        cache = AsyncMemCache(ttl=0.3, on_expire=on_expire, check_interval=0.05)
+        async with cache:
+            await cache.set("key1", {"data": "value1"})
+
+            # Repeated peeks should not refresh expiration.
+            for _ in range(3):
+                await asyncio.sleep(0.08)
+                assert await cache.peek("key1") == {"data": "value1"}
+
+            # Wait a bit past original TTL and verify natural expiry happened.
+            await asyncio.sleep(0.2)
+            assert await cache.peek("key1") is None
+            assert len(callback_called) == 1
+            assert callback_called[0] == ("key1", {"data": "value1"})
+
+    @pytest.mark.asyncio
+    async def test_get_still_extends_ttl_after_peek_added(self):
+        """get() should keep its existing TTL-extension semantics."""
+        callback_called = []
+
+        async def on_expire(key: str, value: dict):
+            callback_called.append((key, value))
+
+        cache = AsyncMemCache(ttl=0.3, on_expire=on_expire, check_interval=0.05)
+        async with cache:
+            await cache.set("key1", {"data": "value1"})
+
+            # Access by get() before TTL each time to extend expiration.
+            for _ in range(4):
+                await asyncio.sleep(0.15)
+                assert await cache.get("key1") == {"data": "value1"}
+
+            # Key should still be present due to TTL refresh via get().
+            assert await cache.peek("key1") == {"data": "value1"}
+            assert len(callback_called) == 0

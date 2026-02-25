@@ -152,6 +152,39 @@ class TestReconciliationSkipCases:
         await manager.close()
 
     @pytest.mark.asyncio
+    async def test_reconciliation_check_does_not_refresh_pending_ttl(self):
+        """Reconciliation scan should not extend pending tx TTL."""
+        manager = _create_manager(
+            reconciliation_interval=0.05,
+            reconciliation_threshold=0.0,
+        )
+
+        # Short TTL cache so timeout callback should fire quickly.
+        manager.pending_transactions = AsyncMemCache(
+            ttl=0.2,
+            on_expire=manager.on_transaction_timeout,
+            check_interval=0.05,
+        )
+        manager.w3.eth.get_transaction_receipt = AsyncMock(return_value=None)
+
+        txhash = "0xpending_ttl"
+        order = _make_order("buy1", txhash=txhash, sent_timestamp=time() - 10)
+        manager.cloid_to_order["buy1"] = order
+        manager.txhash_to_sent_orders[txhash] = SentOrders(
+            buy_orders=[order], sell_orders=[], cancel_orders=[]
+        )
+
+        await manager.start()
+        await manager.pending_transactions.set(txhash, txhash)
+
+        # Wait well beyond TTL; reconciliation loop is also running frequently.
+        await asyncio.sleep(0.5)
+
+        # If reconciliation uses non-refresh reads, timeout callback should fire.
+        assert order.status == OrderStatus.ORDER_TIMEOUT
+        await manager.close()
+
+    @pytest.mark.asyncio
     async def test_non_sent_orders_are_skipped(self):
         """Orders not in ORDER_SENT status should not be reconciled."""
         manager = _create_manager(

@@ -280,8 +280,9 @@ class OrdersManager:
                         continue
 
                     # Skip orders whose txhash is still in pending_transactions
-                    # (normal TTL timeout path will handle those)
-                    if await self.pending_transactions.get(order.txhash) is not None:
+                    # (normal TTL timeout path will handle those).
+                    # Use non-refresh read to avoid extending pending tx TTL.
+                    if await self.pending_transactions.peek(order.txhash) is not None:
                         continue
 
                     # Skip orders whose txhash is already being reconciled
