@@ -20,6 +20,14 @@ from kuru_sdk_py.manager.order import OrderSide
 from kuru_sdk_py.utils.errors import decode_contract_error
 
 
+_TERMINAL_STATUSES = frozenset({
+    OrderStatus.ORDER_FULLY_FILLED,
+    OrderStatus.ORDER_CANCELLED,
+    OrderStatus.ORDER_TIMEOUT,
+    OrderStatus.ORDER_FAILED,
+})
+
+
 @dataclass
 class SentOrders:
     buy_orders: list[Order]
@@ -353,14 +361,40 @@ class OrdersManager:
         # Return the kuru_order_id (may be None if order not yet placed)
         return order.kuru_order_id
 
+    def _cleanup_order(self, order: Order) -> None:
+        """Remove a terminal order from all local tracking dicts.
+
+        Called after the order has been pushed to processed_orders_queue so
+        the consumer always receives the final state before cleanup.
+        """
+        self.cloid_to_order.pop(order.cloid, None)
+
+        if order.kuru_order_id is not None:
+            self.kuru_order_id_to_cloid.pop(order.kuru_order_id, None)
+
+        if order.txhash is not None:
+            sent = self.txhash_to_sent_orders.get(order.txhash)
+            if sent is not None:
+                batch_cloids = (
+                    [o.cloid for o in sent.buy_orders]
+                    + [o.cloid for o in sent.sell_orders]
+                    + [o.cloid for o in sent.cancel_orders]
+                )
+                if not any(c in self.cloid_to_order for c in batch_cloids):
+                    self.txhash_to_sent_orders.pop(order.txhash, None)
+                    self.txhash_to_orders_created.pop(order.txhash, None)
+
     async def _finalize_order_update(self, order: Order) -> None:
         """Finalize order update by creating unique ID, updating dictionaries, and queuing order."""
         self.cloid_to_order[order.cloid] = order
         if order.kuru_order_id is not None:
             self.kuru_order_id_to_cloid[order.kuru_order_id] = order.cloid
 
-        # Send to queue
+        # Consumer receives final state before cleanup
         await self.processed_orders_queue.put(order)
+
+        if order.status in _TERMINAL_STATUSES:
+            self._cleanup_order(order)
 
     async def on_order_created(self, order_created_event: OrderCreatedEvent) -> None:
         """Callback function to handle order creation."""
