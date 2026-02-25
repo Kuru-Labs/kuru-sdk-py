@@ -7,7 +7,12 @@ from eth_account.signers.local import LocalAccount
 import asyncio
 
 from .nonce_manager import NonceManager
-from kuru_sdk_py.utils.errors import decode_contract_error
+from kuru_sdk_py.exceptions import (
+    KuruContractError,
+    KuruInsufficientFundsError,
+    KuruTransactionError,
+)
+from kuru_sdk_py.utils.errors import decode_contract_error, extract_error_selector
 from kuru_sdk_py.configs import TransactionConfig
 
 
@@ -109,6 +114,7 @@ class AsyncTransactionSenderMixin:
             except Exception as e:
                 # Try to decode contract error for better error message
                 decoded_error = decode_contract_error(e)
+                selector = extract_error_selector(e)
 
                 if decoded_error:
                     error_msg = f"Transaction would revert: {decoded_error}"
@@ -120,7 +126,11 @@ class AsyncTransactionSenderMixin:
                     error_msg = f"Transaction would fail: {e}"
                     logger.error(f"Gas estimation failed: {e}")
 
-                raise ValueError(error_msg)
+                raise KuruContractError(
+                    error_msg,
+                    revert_reason=decoded_error,
+                    selector=selector,
+                ) from e
 
             # Sign transaction
             signed_tx = self.account.sign_transaction(tx)
@@ -132,7 +142,7 @@ class AsyncTransactionSenderMixin:
             logger.info(f"Transaction sent: {tx_hash_hex}")
             return tx_hash_hex
 
-        except ValueError as e:
+        except KuruTransactionError as e:
             # Mark nonce as failed to force resync on next transaction
             await NonceManager.mark_transaction_failed(self.user_address)
             logger.error(f"Transaction validation failed: {e}")
@@ -143,6 +153,7 @@ class AsyncTransactionSenderMixin:
 
             # Check for insufficient funds error
             error_str = str(e)
+            tx_data = locals().get("tx", {})
             if "Insufficient funds" in error_str or (
                 hasattr(e, "args")
                 and isinstance(e.args[0], dict)
@@ -151,7 +162,9 @@ class AsyncTransactionSenderMixin:
                 # Get current balance for helpful error message
                 try:
                     current_balance = await self.w3.eth.get_balance(self.user_address)
-                    estimated_gas_cost = tx.get("gas", 0) * tx.get("gasPrice", 0)
+                    estimated_gas_cost = tx_data.get("gas", 0) * tx_data.get(
+                        "gasPrice", 0
+                    )
                     total_required = value + estimated_gas_cost
 
                     logger.error(
@@ -162,29 +175,36 @@ class AsyncTransactionSenderMixin:
                         f"    - Estimated gas cost: {estimated_gas_cost} wei\n"
                         f"  Shortfall: {total_required - current_balance} wei ({(total_required - current_balance) / 1e18:.6f} native tokens)"
                     )
-                    raise Exception(
+                    raise KuruInsufficientFundsError(
                         f"Insufficient funds: wallet has {current_balance / 1e18:.6f} native tokens but needs "
                         f"{total_required / 1e18:.6f} native tokens ({value / 1e18:.6f} for transfer + "
-                        f"{estimated_gas_cost / 1e18:.6f} for gas). Please add more native tokens to your wallet."
+                        f"{estimated_gas_cost / 1e18:.6f} for gas). Please add more native tokens to your wallet.",
                     )
-                except:
+                except KuruInsufficientFundsError:
+                    raise
+                except Exception:
                     # Fallback if balance check fails
-                    raise Exception(
+                    raise KuruInsufficientFundsError(
                         f"Insufficient funds for transaction. Please ensure your wallet has enough native tokens "
-                        f"to cover both the transaction value ({value / 1e18:.6f} tokens) and gas costs."
+                        f"to cover both the transaction value ({value / 1e18:.6f} tokens) and gas costs.",
                     )
 
             # Try to decode contract error for better error message
             decoded_error = decode_contract_error(e)
+            selector = extract_error_selector(e)
 
             if decoded_error:
                 error_msg = f"Transaction failed with contract error: {decoded_error}"
                 logger.error(error_msg)
                 logger.debug(f"Original exception: {e}")
-                raise Exception(error_msg)
+                raise KuruContractError(
+                    error_msg,
+                    revert_reason=decoded_error,
+                    selector=selector,
+                ) from e
             else:
                 logger.error(f"Failed to send transaction: {e}")
-                raise Exception(f"Transaction failed: {e}")
+                raise KuruTransactionError(f"Transaction failed: {e}") from e
 
     async def _wait_for_transaction_receipt(
         self: AsyncTransactionSenderProtocol,

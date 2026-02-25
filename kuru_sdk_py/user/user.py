@@ -20,6 +20,7 @@ from kuru_sdk_py.utils import (
     is_native_token,
 )
 from kuru_sdk_py.transaction.transaction import AsyncTransactionSenderMixin
+from kuru_sdk_py.exceptions import KuruAuthorizationError, KuruInsufficientFundsError
 
 
 class User(AsyncTransactionSenderMixin):
@@ -306,7 +307,7 @@ class User(AsyncTransactionSenderMixin):
                 logger.error(
                     f"Failed to fetch active orders: {response.status_code} {response.text}"
                 )
-                raise Exception(
+                raise KuruAuthorizationError(
                     f"Failed to fetch active orders: HTTP {response.status_code}"
                 )
 
@@ -320,7 +321,7 @@ class User(AsyncTransactionSenderMixin):
 
         except requests.RequestException as e:
             logger.error(f"API request failed: {e}")
-            raise Exception(f"Failed to fetch active orders: {e}")
+            raise KuruAuthorizationError(f"Failed to fetch active orders: {e}") from e
 
     # Allowance query methods
 
@@ -500,6 +501,83 @@ class User(AsyncTransactionSenderMixin):
 
     # Deposit methods
 
+    async def _deposit_token(
+        self,
+        amount: DecimalLike,
+        token_address: str,
+        token_contract: Optional[AsyncContract],
+        decimals: int,
+        name: str,
+        auto_approve: bool,
+    ) -> str:
+        """Shared deposit flow for base/quote tokens."""
+        amount_wei = int(to_decimal(amount) * Decimal(10**decimals))
+        is_native = is_native_token(token_address)
+
+        if not is_native:
+            if token_contract is None:
+                raise KuruAuthorizationError(
+                    f"{name.capitalize()} token contract is not initialized"
+                )
+
+            current_allowance = await token_contract.functions.allowance(
+                self.user_address, self.margin_contract_address
+            ).call()
+            if current_allowance < amount_wei:
+                if auto_approve:
+                    logger.info(
+                        f"Auto-approving {name} token allowance: {amount_wei} wei "
+                        f"(had {current_allowance} wei)"
+                    )
+                    approve_call = token_contract.functions.approve(
+                        self.margin_contract_address, amount_wei
+                    )
+                    approve_tx = await self._send_transaction(approve_call, value=0)
+                    await self._wait_for_transaction_receipt(approve_tx)
+                else:
+                    raise KuruInsufficientFundsError(
+                        f"Insufficient allowance for {name} token. Need {amount_wei} wei, "
+                        f"have {current_allowance} wei. Call approve_{name}() or set auto_approve=True"
+                    )
+
+        token_param = ZERO_ADDRESS if is_native else token_address
+        value_param = amount_wei if is_native else 0
+
+        if is_native and value_param > 0:
+            current_balance = await self.w3.eth.get_balance(self.user_address)
+            estimated_gas = 100_000
+            gas_price = await self.w3.eth.gas_price
+            estimated_gas_cost = estimated_gas * gas_price
+            total_required = value_param + estimated_gas_cost
+
+            if current_balance < total_required:
+                raise KuruInsufficientFundsError(
+                    f"Insufficient native token balance for deposit:\n"
+                    f"  Current balance: {current_balance} wei ({current_balance / 1e18:.6f} tokens)\n"
+                    f"  Required: ~{total_required} wei (~{total_required / 1e18:.6f} tokens)\n"
+                    f"    - Deposit amount: {value_param} wei ({amount} tokens)\n"
+                    f"    - Estimated gas: ~{estimated_gas_cost} wei (~{estimated_gas_cost / 1e18:.6f} tokens)\n"
+                    f"  Please add more native tokens to your wallet."
+                )
+            if current_balance < total_required * 1.1:
+                logger.warning(
+                    f"Low native token balance: {current_balance / 1e18:.6f} tokens. "
+                    f"Required: ~{total_required / 1e18:.6f} tokens (including gas). "
+                    f"Transaction may fail if gas costs are higher than estimated."
+                )
+
+        logger.info(
+            f"Depositing {amount} {name} tokens ({amount_wei} wei) "
+            f"({'native' if is_native else 'ERC20'}) to margin account {self.margin_contract_address}"
+        )
+
+        function_call = self.margin_contract.functions.deposit(
+            self.user_address, token_param, amount_wei
+        )
+        tx_hash = await self._send_transaction(function_call, value=value_param)
+        await self._wait_for_transaction_receipt(tx_hash)
+        return tx_hash
+
     async def deposit_base(self, amount: DecimalLike, auto_approve: bool = True) -> str:
         """
         Deposit base tokens to margin account.
@@ -522,69 +600,14 @@ class User(AsyncTransactionSenderMixin):
             Exception: If transaction fails
             TimeoutError: If transaction not confirmed within timeout (120s)
         """
-        # Convert float amount to integer wei value
-        amount_wei = self._convert_base_amount(amount)
-
-        is_native = is_native_token(self.base_token_address)
-
-        # Handle approval for ERC20 tokens
-        if not is_native:
-            current_allowance = await self.get_base_allowance()
-            if current_allowance < amount_wei:
-                if auto_approve:
-                    logger.info(
-                        f"Auto-approving base token allowance: {amount_wei} wei (had {current_allowance} wei)"
-                    )
-                    await self.approve_base(amount_wei)
-                else:
-                    raise ValueError(
-                        f"Insufficient allowance for base token. Need {amount_wei} wei, have {current_allowance} wei. "
-                        f"Call approve_base() or set auto_approve=True"
-                    )
-
-        # Determine parameters for deposit call
-        token_param = ZERO_ADDRESS if is_native else self.base_token_address
-        value_param = amount_wei if is_native else 0
-
-        # Pre-flight balance check for native token deposits
-        if is_native and value_param > 0:
-            current_balance = await self.w3.eth.get_balance(self.user_address)
-            # Rough gas estimate (actual will be calculated by _send_transaction)
-            estimated_gas = 100_000
-            gas_price = await self.w3.eth.gas_price
-            estimated_gas_cost = estimated_gas * gas_price
-            total_required = value_param + estimated_gas_cost
-
-            if current_balance < total_required:
-                raise ValueError(
-                    f"Insufficient native token balance for deposit:\n"
-                    f"  Current balance: {current_balance} wei ({current_balance / 1e18:.6f} tokens)\n"
-                    f"  Required: ~{total_required} wei (~{total_required / 1e18:.6f} tokens)\n"
-                    f"    - Deposit amount: {value_param} wei ({amount} tokens)\n"
-                    f"    - Estimated gas: ~{estimated_gas_cost} wei (~{estimated_gas_cost / 1e18:.6f} tokens)\n"
-                    f"  Please add more native tokens to your wallet."
-                )
-            elif current_balance < total_required * 1.1:  # Less than 10% buffer
-                logger.warning(
-                    f"Low native token balance: {current_balance / 1e18:.6f} tokens. "
-                    f"Required: ~{total_required / 1e18:.6f} tokens (including gas). "
-                    f"Transaction may fail if gas costs are higher than estimated."
-                )
-
-        logger.info(
-            f"Depositing {amount} base tokens ({amount_wei} wei) "
-            f"({'native' if is_native else 'ERC20'}) to margin account {self.margin_contract_address}"
+        return await self._deposit_token(
+            amount=amount,
+            token_address=self.base_token_address,
+            token_contract=self.base_token_contract,
+            decimals=self.base_token_decimals,
+            name="base",
+            auto_approve=auto_approve,
         )
-
-        # Build and send deposit transaction
-        function_call = self.margin_contract.functions.deposit(
-            self.user_address, token_param, amount_wei
-        )
-        tx_hash = await self._send_transaction(function_call, value=value_param)
-
-        await self._wait_for_transaction_receipt(tx_hash)
-
-        return tx_hash
 
     async def deposit_quote(self, amount: DecimalLike, auto_approve: bool = True) -> str:
         """
@@ -608,69 +631,14 @@ class User(AsyncTransactionSenderMixin):
             Exception: If transaction fails
             TimeoutError: If transaction not confirmed within timeout (120s)
         """
-        # Convert float amount to integer wei value
-        amount_wei = self._convert_quote_amount(amount)
-
-        is_native = is_native_token(self.quote_token_address)
-
-        # Handle approval for ERC20 tokens
-        if not is_native:
-            current_allowance = await self.get_quote_allowance()
-            if current_allowance < amount_wei:
-                if auto_approve:
-                    logger.info(
-                        f"Auto-approving quote token allowance: {amount_wei} wei (had {current_allowance} wei)"
-                    )
-                    await self.approve_quote(amount_wei)
-                else:
-                    raise ValueError(
-                        f"Insufficient allowance for quote token. Need {amount_wei} wei, have {current_allowance} wei. "
-                        f"Call approve_quote() or set auto_approve=True"
-                    )
-
-        # Determine parameters for deposit call
-        token_param = ZERO_ADDRESS if is_native else self.quote_token_address
-        value_param = amount_wei if is_native else 0
-
-        # Pre-flight balance check for native token deposits
-        if is_native and value_param > 0:
-            current_balance = await self.w3.eth.get_balance(self.user_address)
-            # Rough gas estimate (actual will be calculated by _send_transaction)
-            estimated_gas = 100_000
-            gas_price = await self.w3.eth.gas_price
-            estimated_gas_cost = estimated_gas * gas_price
-            total_required = value_param + estimated_gas_cost
-
-            if current_balance < total_required:
-                raise ValueError(
-                    f"Insufficient native token balance for deposit:\n"
-                    f"  Current balance: {current_balance} wei ({current_balance / 1e18:.6f} tokens)\n"
-                    f"  Required: ~{total_required} wei (~{total_required / 1e18:.6f} tokens)\n"
-                    f"    - Deposit amount: {value_param} wei ({amount} tokens)\n"
-                    f"    - Estimated gas: ~{estimated_gas_cost} wei (~{estimated_gas_cost / 1e18:.6f} tokens)\n"
-                    f"  Please add more native tokens to your wallet."
-                )
-            elif current_balance < total_required * 1.1:  # Less than 10% buffer
-                logger.warning(
-                    f"Low native token balance: {current_balance / 1e18:.6f} tokens. "
-                    f"Required: ~{total_required / 1e18:.6f} tokens (including gas). "
-                    f"Transaction may fail if gas costs are higher than estimated."
-                )
-
-        logger.info(
-            f"Depositing {amount} quote tokens ({amount_wei} wei) "
-            f"({'native' if is_native else 'ERC20'}) to margin account {self.margin_contract_address}"
+        return await self._deposit_token(
+            amount=amount,
+            token_address=self.quote_token_address,
+            token_contract=self.quote_token_contract,
+            decimals=self.quote_token_decimals,
+            name="quote",
+            auto_approve=auto_approve,
         )
-
-        # Build and send deposit transaction
-        function_call = self.margin_contract.functions.deposit(
-            self.user_address, token_param, amount_wei
-        )
-        tx_hash = await self._send_transaction(function_call, value=value_param)
-
-        await self._wait_for_transaction_receipt(tx_hash)
-
-        return tx_hash
 
     # Withdraw methods
 
@@ -748,6 +716,93 @@ class User(AsyncTransactionSenderMixin):
 
     # EIP-7702 Authorization
 
+    async def _send_eip_7702_transaction(
+        self,
+        authorization_address: str,
+        action_name: str,
+        nonce: Optional[int] = None,
+    ) -> tuple[str, dict]:
+        """Shared EIP-7702 send path for authorization and revocation."""
+        chain_id = await self.w3.eth.chain_id
+
+        if nonce is None:
+            nonce = await self.w3.eth.get_transaction_count(self.user_address)
+            logger.info(f"Using current nonce for {action_name}: {nonce}")
+        else:
+            logger.info(f"Using provided nonce for {action_name}: {nonce}")
+
+        logger.info(f"Preparing EIP-7702 {action_name} on chain {chain_id}")
+
+        authorization = {
+            "chainId": chain_id,
+            "address": authorization_address,
+            "nonce": nonce + 1,
+        }
+
+        signed_auth = self.account.sign_authorization(authorization)
+        logger.debug(
+            f"Signed {action_name} authorization created: {type(signed_auth).__name__}"
+        )
+
+        max_priority_fee = await self.w3.eth.max_priority_fee
+        latest_block = await self.w3.eth.get_block("latest")
+        base_fee = latest_block["baseFeePerGas"]
+        max_fee = base_fee * 2 + max_priority_fee
+
+        tx = {
+            "chainId": chain_id,
+            "nonce": nonce,
+            "gas": 100_000,
+            "maxFeePerGas": max_fee,
+            "maxPriorityFeePerGas": max_priority_fee,
+            "to": self.user_address,
+            "value": 0,
+            "authorizationList": [signed_auth],
+            "data": b"",
+        }
+
+        try:
+            estimated_gas = await self.w3.eth.estimate_gas(tx)
+            tx["gas"] = int(estimated_gas)
+            logger.debug(f"Estimated gas: {estimated_gas}, using: {tx['gas']}")
+        except Exception as e:
+            logger.warning(f"Gas estimation failed, using default: {e}")
+
+        if action_name == "authorization":
+            native_balance = await self.w3.eth.get_balance(self.user_address)
+            estimated_gas_cost = tx["gas"] * tx["maxFeePerGas"]
+            total_required = tx["value"] + estimated_gas_cost
+
+            logger.info(
+                f"Native balance: {native_balance} wei ({native_balance / 1e18:.6f} tokens)"
+            )
+            logger.info(
+                f"Total required for EIP-7702 authorization: {total_required} wei "
+                f"({total_required / 1e18:.6f} tokens)"
+            )
+
+            if native_balance < total_required:
+                raise KuruInsufficientFundsError(
+                    f"Insufficient native token balance for EIP-7702 authorization:\n"
+                    f"  Current balance: {native_balance} wei ({native_balance / 1e18:.6f} tokens)\n"
+                    f"  Required: {total_required} wei ({total_required / 1e18:.6f} tokens)\n"
+                    f"    - Transaction value: {tx['value']} wei\n"
+                    f"    - Estimated gas cost: {estimated_gas_cost} wei ({estimated_gas_cost / 1e18:.6f} tokens)\n"
+                    f"  Shortfall: {total_required - native_balance} wei ({(total_required - native_balance) / 1e18:.6f} tokens)\n"
+                    f"  Please add more native tokens to your wallet."
+                )
+
+        signed_tx = self.account.sign_transaction(tx)
+        tx_hash = await self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        tx_hash_hex = tx_hash.hex()
+        logger.info(f"EIP-7702 {action_name} transaction sent: {tx_hash_hex}")
+
+        tx_receipt = await self._wait_for_transaction_receipt(tx_hash_hex)
+        logger.info(
+            f"EIP-7702 {action_name} confirmed in block {tx_receipt['blockNumber']}"
+        )
+        return tx_hash_hex, tx_receipt
+
     async def eip_7702_auth(self, nonce: Optional[int] = None) -> str:
         """
         Create and send an EIP-7702 authorization transaction.
@@ -771,120 +826,19 @@ class User(AsyncTransactionSenderMixin):
             TimeoutError: If transaction not confirmed within timeout (120s)
         """
 
-        logger.success(f"Using account: {self.account.address}")
-
-        # Fetch and log native balance before authorization
-        native_balance = await self.w3.eth.get_balance(self.user_address)
-        native_balance_readable = native_balance / 1e18
-        logger.info(
-            f"Native balance: {native_balance} wei ({native_balance_readable:.6f} tokens)"
-        )
-
         try:
-            # Get chain ID and nonce
-            chain_id = await self.w3.eth.chain_id
-
-            if nonce is None:
-                nonce = await self.w3.eth.get_transaction_count(self.user_address)
-                logger.info(f"Using current nonce for authorization: {nonce}")
-            else:
-                logger.info(f"Using provided nonce for authorization: {nonce}")
-
-            logger.info(
-                f"Creating EIP-7702 authorization for MM Entrypoint {self.mm_entrypoint_address} "
-                f"on chain {chain_id}"
+            logger.success(f"Using account: {self.account.address}")
+            _, tx_receipt = await self._send_eip_7702_transaction(
+                authorization_address=self.mm_entrypoint_address,
+                action_name="authorization",
+                nonce=nonce,
             )
-
-            # Build authorization
-            authorization = {
-                "chainId": chain_id,
-                "address": self.mm_entrypoint_address,
-                "nonce": nonce + 1,
-            }
-
-            # Sign authorization with private key
-            signed_auth = self.account.sign_authorization(authorization)
-            logger.debug(f"Signed authorization created: {type(signed_auth).__name__}")
-
-            # Get gas price parameters
-            max_priority_fee = await self.w3.eth.max_priority_fee
-            latest_block = await self.w3.eth.get_block("latest")
-            base_fee = latest_block["baseFeePerGas"]
-            max_fee = base_fee * 2 + max_priority_fee  # 2x base fee + priority
-
-            logger.info(f"Gas price parameters:")
-            logger.info(f"  Base fee: {base_fee} wei ({base_fee / 1e9:.2f} gwei)")
-            logger.info(
-                f"  Max priority fee: {max_priority_fee} wei ({max_priority_fee / 1e9:.2f} gwei)"
-            )
-            logger.info(f"  Max fee per gas: {max_fee} wei ({max_fee / 1e9:.2f} gwei)")
-
-            # Build type 4 transaction
-            tx = {
-                "chainId": chain_id,
-                "nonce": nonce,
-                "gas": 100_000,  # Reasonable default for simple authorization
-                "maxFeePerGas": max_fee,
-                "maxPriorityFeePerGas": max_priority_fee,
-                "to": self.user_address,  # Send to MM Entrypoint contract
-                "value": 0,
-                "authorizationList": [signed_auth],
-                "data": b"",
-            }
-
-            # Estimate gas for type 4 transaction
-            try:
-                estimated_gas = await self.w3.eth.estimate_gas(tx)
-                tx["gas"] = int(estimated_gas)
-                logger.debug(f"Estimated gas: {estimated_gas}, using: {tx['gas']}")
-            except Exception as e:
-                logger.warning(f"Gas estimation failed, using default: {e}")
-                # Keep default gas limit
-
-            # Pre-flight balance check
-            estimated_gas_cost = tx["gas"] * tx["maxFeePerGas"]
-            total_required = tx["value"] + estimated_gas_cost
-
-            logger.info(f"Transaction cost estimate:")
-            logger.info(f"  Gas: {tx['gas']}")
-            logger.info(
-                f"  Gas cost: {estimated_gas_cost} wei ({estimated_gas_cost / 1e18:.6f} tokens)"
-            )
-            logger.info(
-                f"  Total required: {total_required} wei ({total_required / 1e18:.6f} tokens)"
-            )
-
-            if native_balance < total_required:
-                raise ValueError(
-                    f"Insufficient native token balance for EIP-7702 authorization:\n"
-                    f"  Current balance: {native_balance} wei ({native_balance / 1e18:.6f} tokens)\n"
-                    f"  Required: {total_required} wei ({total_required / 1e18:.6f} tokens)\n"
-                    f"    - Transaction value: {tx['value']} wei\n"
-                    f"    - Estimated gas cost: {estimated_gas_cost} wei ({estimated_gas_cost / 1e18:.6f} tokens)\n"
-                    f"  Shortfall: {total_required - native_balance} wei ({(total_required - native_balance) / 1e18:.6f} tokens)\n"
-                    f"  Please add more native tokens to your wallet."
-                )
-
-            # Sign transaction
-            signed_tx = self.account.sign_transaction(tx)
-
-            # Send transaction
-            tx_hash = await self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-            tx_hash_hex = tx_hash.hex()
-
-            logger.info(f"EIP-7702 authorization transaction sent: {tx_hash_hex}")
-
-            # Wait for transaction confirmation
-            tx_receipt = await self._wait_for_transaction_receipt(tx_hash_hex)
-            logger.info(
-                f"EIP-7702 authorization confirmed in block {tx_receipt['blockNumber']}"
-            )
-
             return tx_receipt
-
         except Exception as e:
             logger.error(f"Failed to create EIP-7702 authorization: {e}")
-            raise Exception(f"EIP-7702 authorization failed: {e}")
+            if isinstance(e, KuruInsufficientFundsError):
+                raise
+            raise KuruAuthorizationError(f"EIP-7702 authorization failed: {e}") from e
 
     async def eip_7702_revoke(self, nonce: Optional[int] = None) -> str:
         """
@@ -912,79 +866,16 @@ class User(AsyncTransactionSenderMixin):
             TimeoutError: If transaction not confirmed within timeout (120s)
         """
         try:
-            # Get chain ID and nonce
-            chain_id = await self.w3.eth.chain_id
-
-            if nonce is None:
-                nonce = await self.w3.eth.get_transaction_count(self.user_address)
-                logger.info(f"Using current nonce for revocation: {nonce}")
-            else:
-                logger.info(f"Using provided nonce for revocation: {nonce}")
-
-            logger.info(
-                f"Revoking EIP-7702 authorization (clearing delegation) "
-                f"on chain {chain_id}"
+            tx_hash_hex, _ = await self._send_eip_7702_transaction(
+                authorization_address=ZERO_ADDRESS,
+                action_name="revocation",
+                nonce=nonce,
             )
-
-            # Build revocation authorization with zero address
-            revocation_auth = {
-                "chainId": chain_id,
-                "address": ZERO_ADDRESS,  # Zero address triggers revocation
-                "nonce": nonce + 1,
-            }
-
-            # Sign revocation authorization with private key
-            signed_auth = self.account.sign_authorization(revocation_auth)
-            logger.debug(
-                f"Signed revocation authorization created: {type(signed_auth).__name__}"
-            )
-
-            # Get gas price parameters
-            max_priority_fee = await self.w3.eth.max_priority_fee
-            latest_block = await self.w3.eth.get_block("latest")
-            base_fee = latest_block["baseFeePerGas"]
-            max_fee = base_fee * 2 + max_priority_fee  # 2x base fee + priority
-
-            # Build type 4 transaction
-            tx = {
-                "chainId": chain_id,
-                "nonce": nonce,
-                "gas": 100_000,  # Reasonable default for revocation
-                "maxFeePerGas": max_fee,
-                "maxPriorityFeePerGas": max_priority_fee,
-                "to": self.user_address,  # Send to MM Entrypoint contract
-                "value": 0,
-                "authorizationList": [signed_auth],
-                "data": b"",
-            }
-
-            # Estimate gas for type 4 transaction
-            try:
-                estimated_gas = await self.w3.eth.estimate_gas(tx)
-                tx["gas"] = int(estimated_gas)
-                logger.debug(f"Estimated gas: {estimated_gas}, using: {tx['gas']}")
-            except Exception as e:
-                logger.warning(f"Gas estimation failed, using default: {e}")
-                # Keep default gas limit
-
-            # Sign transaction
-            signed_tx = self.account.sign_transaction(tx)
-
-            # Send transaction
-            tx_hash = await self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-            tx_hash_hex = tx_hash.hex()
-
-            logger.info(f"EIP-7702 revocation transaction sent: {tx_hash_hex}")
-
-            # Wait for transaction confirmation
-            await self._wait_for_transaction_receipt(tx_hash_hex)
-            logger.info(f"EIP-7702 revocation confirmed")
-
             return tx_hash_hex
 
         except Exception as e:
             logger.error(f"Failed to revoke EIP-7702 authorization: {e}")
-            raise Exception(f"EIP-7702 revocation failed: {e}")
+            raise KuruAuthorizationError(f"EIP-7702 revocation failed: {e}") from e
 
     async def close(self) -> None:
         """Close the HTTP provider session."""

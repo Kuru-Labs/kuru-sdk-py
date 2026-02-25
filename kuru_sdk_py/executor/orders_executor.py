@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from decimal import Decimal
 from loguru import logger
 from web3 import AsyncWeb3, AsyncHTTPProvider
@@ -13,14 +14,15 @@ from kuru_sdk_py.configs import (
     TransactionConfig,
     OrderExecutionConfig,
 )
-from kuru_sdk_py.manager.order import Order, OrderType, OrderStatus, OrderSide
+from kuru_sdk_py.manager.order import Order, OrderType, OrderSide
+from kuru_sdk_py.manager.orders_manager import OrdersManager
 from kuru_sdk_py.utils import load_abi
 from kuru_sdk_py.transaction.transaction import AsyncTransactionSenderMixin
 from kuru_sdk_py.transaction.access_list import (
     build_access_list_for_cancel_only,
     build_access_list_for_cancel_and_place,
 )
-from kuru_sdk_py.configs import KuruMMConfig
+from kuru_sdk_py.utils.utils import string_to_bytes32
 
 
 def round_price_down(price_int: int, tick_size: int) -> int:
@@ -31,6 +33,99 @@ def round_price_down(price_int: int, tick_size: int) -> int:
 def round_price_up(price_int: int, tick_size: int) -> int:
     """Round price up to nearest tick (for sells)."""
     return ((price_int + tick_size - 1) // tick_size) * tick_size
+
+
+@dataclass
+class BatchOrderRequest:
+    buy_cloids: list[bytes]
+    sell_cloids: list[bytes]
+    cancel_cloids: list[bytes]
+    buy_prices: list[Decimal]
+    buy_sizes: list[Decimal]
+    sell_prices: list[Decimal]
+    sell_sizes: list[Decimal]
+    order_ids_to_cancel: list[int]
+    orders_to_cancel_metadata: list[tuple[int, int, bool]]
+    post_only: bool
+    price_rounding: str = "default"
+    buy_orders: list[Order] = field(default_factory=list, repr=False)
+    sell_orders: list[Order] = field(default_factory=list, repr=False)
+    cancel_orders: list[Order] = field(default_factory=list, repr=False)
+
+    @staticmethod
+    def from_orders(
+        orders: list[Order],
+        orders_manager: OrdersManager,
+        market_config: MarketConfig,
+        post_only: bool,
+        price_rounding: Optional[str] = "default",
+    ) -> "BatchOrderRequest":
+        """Build batch request from Order objects."""
+        buy_orders = [order for order in orders if order.side == OrderSide.BUY]
+        sell_orders = [order for order in orders if order.side == OrderSide.SELL]
+        cancel_orders = [
+            order for order in orders if order.order_type == OrderType.CANCEL
+        ]
+
+        buy_orders.sort(key=lambda order: order.price, reverse=True)
+        sell_orders.sort(key=lambda order: order.price)
+
+        buy_cloids = [string_to_bytes32(order.cloid) for order in buy_orders]
+        buy_prices = [order.price for order in buy_orders]
+        buy_sizes = [order.size for order in buy_orders]
+
+        sell_cloids = [string_to_bytes32(order.cloid) for order in sell_orders]
+        sell_prices = [order.price for order in sell_orders]
+        sell_sizes = [order.size for order in sell_orders]
+
+        cancel_cloids = [string_to_bytes32(order.cloid) for order in cancel_orders]
+
+        order_ids_to_cancel: list[int] = []
+        orders_to_cancel_metadata: list[tuple[int, int, bool]] = []
+
+        for cancel_order in cancel_orders:
+            kuru_order_id = orders_manager.get_kuru_order_id(cancel_order.cloid)
+            if kuru_order_id is None:
+                logger.error(
+                    f"Kuru order ID not found for cancel order {cancel_order.cloid}"
+                )
+                continue
+
+            order_ids_to_cancel.append(kuru_order_id)
+
+            original_order = orders_manager.cloid_to_order.get(cancel_order.cloid)
+            if (
+                original_order
+                and original_order.price is not None
+                and original_order.side is not None
+            ):
+                price_int = int(
+                    original_order.price * Decimal(market_config.price_precision)
+                )
+                is_buy = original_order.side == OrderSide.BUY
+                orders_to_cancel_metadata.append((kuru_order_id, price_int, is_buy))
+            else:
+                logger.warning(
+                    f"Could not get price/side for cancel order {cancel_order.cloid}, "
+                    "access list will be less optimal"
+                )
+
+        return BatchOrderRequest(
+            buy_cloids=buy_cloids,
+            sell_cloids=sell_cloids,
+            cancel_cloids=cancel_cloids,
+            buy_prices=buy_prices,
+            buy_sizes=buy_sizes,
+            sell_prices=sell_prices,
+            sell_sizes=sell_sizes,
+            order_ids_to_cancel=order_ids_to_cancel,
+            orders_to_cancel_metadata=orders_to_cancel_metadata,
+            post_only=post_only,
+            price_rounding=price_rounding or "default",
+            buy_orders=buy_orders,
+            sell_orders=sell_orders,
+            cancel_orders=cancel_orders,
+        )
 
 
 class OrdersExecutor(AsyncTransactionSenderMixin):
@@ -96,45 +191,23 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
 
         self._connected = False
 
-    @classmethod
-    async def create(
-        cls,
-        mm_entrypoint_address: str,
-        config: KuruMMConfig,
-        order_book_address: str,
-        market_config: MarketConfig,
-    ) -> "OrdersExecutor":
-        """
-        Factory method to create and initialize OrdersExecutor with connection verification.
-
-        Args:
-            mm_entrypoint_address: The address of the MM Entrypoint smart contract
-            config: KuruMMConfig containing RPC URL and private key
-            order_book_address: The address of the Order Book (market address)
-            market_config: MarketConfig containing precision and market metadata
-
-        Returns:
-            Initialized OrdersExecutor instance
-
-        Raises:
-            ConnectionError: If RPC connection fails
-        """
-        instance = cls(mm_entrypoint_address, config, order_book_address, market_config)
-
-        # Verify connection
-        if not await instance.w3.is_connected():
-            raise ConnectionError(f"Failed to connect to RPC at {config.rpc_url}")
-
-        instance._connected = True
-        logger.info(f"Connected to RPC at {config.rpc_url}")
-        logger.info(
-            f"OrdersExecutor initialized for MM Entrypoint contract {instance.contract_address}"
-        )
-        logger.info(f"User address: {instance.user_address}")
-
-        return instance
-
     # _send_transaction is inherited from AsyncTransactionSenderMixin
+
+    async def place_batch(self, request: BatchOrderRequest) -> str:
+        """Place a batch order from a structured batch request."""
+        return await self.place_order(
+            buy_cloids=request.buy_cloids,
+            sell_cloids=request.sell_cloids,
+            cancel_cloids=request.cancel_cloids,
+            buy_prices=request.buy_prices,
+            buy_sizes=request.buy_sizes,
+            sell_prices=request.sell_prices,
+            sell_sizes=request.sell_sizes,
+            order_ids_to_cancel=request.order_ids_to_cancel,
+            orders_to_cancel_metadata=request.orders_to_cancel_metadata,
+            post_only=request.post_only,
+            price_rounding=request.price_rounding,
+        )
 
     async def place_order(
         self,
@@ -151,6 +224,8 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         price_rounding: Optional[str] = "default",
     ) -> str:
         """
+        Deprecated: use place_batch(BatchOrderRequest) for new code.
+
         Place a batch order using the MM Entrypoint contract's batchUpdateMM function
         with EIP-2930 access list optimization.
 

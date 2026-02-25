@@ -12,16 +12,90 @@ from kuru_sdk_py.configs import (
     WebSocketConfig,
     OrderExecutionConfig,
     CacheConfig,
+    ClientConfig,
     KuruMMConfig,  # Legacy - for backward compatibility
     KuruTopicsSignature,
 )
 from kuru_sdk_py.manager.orders_manager import OrdersManager, SentOrders
-from kuru_sdk_py.executor.orders_executor import OrdersExecutor
+from kuru_sdk_py.executor.orders_executor import OrdersExecutor, BatchOrderRequest
 from kuru_sdk_py.feed.rpc_ws import RpcWebsocket
 from kuru_sdk_py.feed.orderbook_ws import KuruFrontendOrderbookClient, FrontendOrderbookUpdate
 from kuru_sdk_py.user.user import User
-from kuru_sdk_py.manager.order import Order, OrderSide, OrderType, OrderStatus
-from kuru_sdk_py.utils.utils import string_to_bytes32
+from kuru_sdk_py.manager.order import Order, OrderStatus
+from kuru_sdk_py.exceptions import KuruConfigError
+
+
+class _QueueConsumer:
+    """Generic queue consumer with callback invocation and graceful draining."""
+
+    def __init__(
+        self,
+        name: str,
+        queue: asyncio.Queue,
+        callback_getter: Callable[[], Optional[Callable[[object], Awaitable[None]]]],
+        shutdown_event: asyncio.Event,
+    ) -> None:
+        self._name = name
+        self._queue = queue
+        self._callback_getter = callback_getter
+        self._shutdown_event = shutdown_event
+
+    async def run(self) -> None:
+        try:
+            while True:
+                if self._shutdown_event.is_set():
+                    break
+
+                try:
+                    item = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
+                callback = self._callback_getter()
+                if callback is None:
+                    continue
+
+                try:
+                    await callback(item)
+                except Exception as e:
+                    logger.error(
+                        f"Error in {self._name} callback: {e}",
+                        exc_info=True,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Fatal error in {self._name} consumer: {e}", exc_info=True)
+
+    async def drain_and_stop(self, task: Optional[asyncio.Task]) -> int:
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=3.0)
+            except asyncio.TimeoutError:
+                pass
+            except asyncio.CancelledError:
+                pass
+
+        callback = self._callback_getter()
+        if callback is None:
+            return 0
+
+        remaining_count = 0
+        while not self._queue.empty():
+            try:
+                item = self._queue.get_nowait()
+                await callback(item)
+                remaining_count += 1
+            except asyncio.QueueEmpty:
+                break
+            except Exception as e:
+                logger.error(
+                    f"Error processing remaining {self._name} item: {e}",
+                    exc_info=True,
+                )
+
+        return remaining_count
 
 
 class KuruClient:
@@ -137,12 +211,12 @@ class KuruClient:
 
         # Validate required configs
         if connection_config is None:
-            raise ValueError(
+            raise KuruConfigError(
                 "connection_config is required. "
                 "Use ConfigManager.load_connection_config() to create one."
             )
         if wallet_config is None:
-            raise ValueError(
+            raise KuruConfigError(
                 "wallet_config is required. "
                 "Use ConfigManager.load_wallet_config() to create one."
             )
@@ -201,6 +275,12 @@ class KuruClient:
 
         # Order callback consumer
         self._order_callback: Optional[Callable[[Order], Awaitable[None]]] = None
+        self._order_consumer = _QueueConsumer(
+            name="order",
+            queue=self.orders_manager.processed_orders_queue,
+            callback_getter=lambda: self._order_callback,
+            shutdown_event=self._shutdown_event,
+        )
         self._order_consumer_task: Optional[asyncio.Task] = None
 
         # Orderbook websocket consumer
@@ -211,6 +291,7 @@ class KuruClient:
         self._orderbook_callback: Optional[
             Callable[[FrontendOrderbookUpdate], Awaitable[None]]
         ] = None
+        self._orderbook_consumer: Optional[_QueueConsumer] = None
         self._orderbook_consumer_task: Optional[asyncio.Task] = None
 
         # Initialize RpcWebsocket (listens to blockchain events)
@@ -231,6 +312,27 @@ class KuruClient:
         self.orders_manager.set_receipt_processor(self.websocket.process_receipt_logs)
 
         return self
+
+    @classmethod
+    async def from_config(cls, config: ClientConfig) -> "KuruClient":
+        """Create a client from a single ClientConfig bundle."""
+        (
+            market_config,
+            connection_config,
+            wallet_config,
+            transaction_config,
+            websocket_config,
+            order_execution_config,
+        ) = config.to_configs()
+
+        return await cls.create(
+            market_config=market_config,
+            connection_config=connection_config,
+            wallet_config=wallet_config,
+            transaction_config=transaction_config,
+            websocket_config=websocket_config,
+            order_execution_config=order_execution_config,
+        )
 
     def set_order_callback(
         self, callback: Optional[Callable[[Order], Awaitable[None]]]
@@ -266,7 +368,9 @@ class KuruClient:
             and not self._log_processing_task.done()
         ):
             if self._order_consumer_task is None or self._order_consumer_task.done():
-                self._order_consumer_task = asyncio.create_task(self._consume_orders())
+                self._order_consumer_task = asyncio.create_task(
+                    self._order_consumer.run()
+                )
 
     def set_orderbook_callback(
         self, callback: Optional[Callable[[FrontendOrderbookUpdate], Awaitable[None]]]
@@ -302,13 +406,14 @@ class KuruClient:
             callback is not None
             and self._orderbook_ws_client is not None
             and self._orderbook_ws_client.is_connected()
+            and self._orderbook_consumer is not None
         ):
             if (
                 self._orderbook_consumer_task is None
                 or self._orderbook_consumer_task.done()
             ):
                 self._orderbook_consumer_task = asyncio.create_task(
-                    self._consume_orderbook_updates()
+                    self._orderbook_consumer.run()
                 )
 
     async def start(self) -> None:
@@ -346,7 +451,7 @@ class KuruClient:
 
         # Start order consumer if callback is set
         if self._order_callback is not None:
-            self._order_consumer_task = asyncio.create_task(self._consume_orders())
+            self._order_consumer_task = asyncio.create_task(self._order_consumer.run())
             logger.info("Order consumer task started")
 
     async def place_orders(
@@ -375,92 +480,28 @@ class KuruClient:
         if post_only is None:
             post_only = self.order_execution_config.post_only
 
-        # split the orders list into buy orders, sell orders and cancel orders
-        buy_orders = [order for order in orders if order.side == OrderSide.BUY]
-        sell_orders = [order for order in orders if order.side == OrderSide.SELL]
-        cancel_orders = [
-            order for order in orders if order.order_type == OrderType.CANCEL
-        ]
-
-        logger.info(
-            f"Placing batch order: {len(buy_orders)} buy orders, "
-            f"{len(sell_orders)} sell orders, {len(cancel_orders)} cancel orders"
-        )
-
-        # sort the buy orders by price in descending order
-        buy_orders.sort(key=lambda x: x.price, reverse=True)
-        # sort the sell orders by price in ascending order
-        sell_orders.sort(key=lambda x: x.price)
-
-        # Register all orders BEFORE sending transaction
-        orders_to_register = buy_orders + sell_orders
-        for order in orders_to_register:
-            order.update_status(OrderStatus.ORDER_SENT)
-            self.orders_manager.cloid_to_order[order.cloid] = order
-
-        buy_cloids = [string_to_bytes32(order.cloid) for order in buy_orders]
-        buy_prices = [order.price for order in buy_orders]
-        buy_sizes = [order.size for order in buy_orders]
-
-        sell_cloids = [string_to_bytes32(order.cloid) for order in sell_orders]
-        sell_prices = [order.price for order in sell_orders]
-        sell_sizes = [order.size for order in sell_orders]
-
-        cancel_cloids = [string_to_bytes32(order.cloid) for order in cancel_orders]
-
-        kuru_order_ids_to_cancel = []
-        orders_to_cancel_metadata = []  # For access list optimization
-
-        for cancel_order in cancel_orders:
-            # Get kuru order ID (existing logic)
-            kuru_order_id = self.orders_manager.get_kuru_order_id(cancel_order.cloid)
-            if kuru_order_id is None:
-                logger.error(
-                    f"Kuru order ID not found for cancel order {cancel_order.cloid}"
-                )
-                continue
-
-            kuru_order_ids_to_cancel.append(kuru_order_id)
-
-            # Get original order to extract price and side for access list
-            original_order = self.orders_manager.cloid_to_order.get(cancel_order.cloid)
-            if (
-                original_order
-                and original_order.price is not None
-                and original_order.side is not None
-            ):
-                # Convert price to integer using market precision
-                price_int = int(
-                    original_order.price * Decimal(self.market_config.price_precision)
-                )
-                is_buy = original_order.side == OrderSide.BUY
-
-                orders_to_cancel_metadata.append((kuru_order_id, price_int, is_buy))
-                logger.debug(
-                    f"Added cancel metadata for {cancel_order.cloid}: "
-                    f"order_id={kuru_order_id}, price={price_int}, is_buy={is_buy}"
-                )
-            else:
-                logger.warning(
-                    f"Could not get price/side for cancel order {cancel_order.cloid}, "
-                    "access list will be less optimal"
-                )
-
-        txhash = await self.executor.place_order(
-            buy_cloids,
-            sell_cloids,
-            cancel_cloids,
-            buy_prices,
-            buy_sizes,
-            sell_prices,
-            sell_sizes,
-            kuru_order_ids_to_cancel,
-            orders_to_cancel_metadata,  # Pass metadata for access list
+        request = BatchOrderRequest.from_orders(
+            orders=orders,
+            orders_manager=self.orders_manager,
+            market_config=self.market_config,
             post_only=post_only,
             price_rounding=price_rounding,
         )
 
-        all_orders = orders_to_register + cancel_orders
+        logger.info(
+            f"Placing batch order: {len(request.buy_orders)} buy orders, "
+            f"{len(request.sell_orders)} sell orders, {len(request.cancel_orders)} cancel orders"
+        )
+
+        # Register all orders BEFORE sending transaction
+        orders_to_register = request.buy_orders + request.sell_orders
+        for order in orders_to_register:
+            order.update_status(OrderStatus.ORDER_SENT)
+            self.orders_manager.cloid_to_order[order.cloid] = order
+
+        txhash = await self.executor.place_batch(request)
+
+        all_orders = orders_to_register + request.cancel_orders
 
         # Set txhash on all orders and register txhash mapping
         for order in all_orders:
@@ -468,7 +509,9 @@ class KuruClient:
 
         # Register sent orders by txhash
         self.orders_manager.txhash_to_sent_orders[txhash] = SentOrders(
-            buy_orders=buy_orders, sell_orders=sell_orders, cancel_orders=cancel_orders
+            buy_orders=request.buy_orders,
+            sell_orders=request.sell_orders,
+            cancel_orders=request.cancel_orders,
         )
 
         # Add to pending transactions cache
@@ -646,6 +689,13 @@ class KuruClient:
         # Create queue if needed
         if self._orderbook_update_queue is None:
             self._orderbook_update_queue = asyncio.Queue()
+        if self._orderbook_consumer is None:
+            self._orderbook_consumer = _QueueConsumer(
+                name="orderbook",
+                queue=self._orderbook_update_queue,
+                callback_getter=lambda: self._orderbook_callback,
+                shutdown_event=self._shutdown_event,
+            )
 
         # Create client if needed
         if self._orderbook_ws_client is None:
@@ -662,9 +712,9 @@ class KuruClient:
         await self._orderbook_ws_client.connect()
 
         # Start consumer task if callback is set
-        if self._orderbook_callback is not None:
+        if self._orderbook_callback is not None and self._orderbook_consumer is not None:
             self._orderbook_consumer_task = asyncio.create_task(
-                self._consume_orderbook_updates()
+                self._orderbook_consumer.run()
             )
 
     async def stop(self, signal_num: Optional[int] = None) -> None:
@@ -685,6 +735,8 @@ class KuruClient:
             logger.info(f"Stopping client due to signal {signal_name} ({signal_num})")
         else:
             logger.info("Stopping client...")
+
+        self._shutdown_event.set()
         # Cancel log processing task if running
         if (
             self._log_processing_task is not None
@@ -698,72 +750,22 @@ class KuruClient:
             except asyncio.CancelledError:
                 pass
 
-        # Cancel order consumer task if running
-        if (
-            self._order_consumer_task is not None
-            and not self._order_consumer_task.done()
-        ):
-            self._order_consumer_task.cancel()
-            try:
-                await asyncio.wait_for(self._order_consumer_task, timeout=3.0)
-            except asyncio.TimeoutError:
-                pass
-            except asyncio.CancelledError:
-                pass
+        remaining_orders = await self._order_consumer.drain_and_stop(
+            self._order_consumer_task
+        )
+        self._order_consumer_task = None
+        if remaining_orders > 0:
+            logger.info(f"Processed {remaining_orders} remaining orders")
 
-            # Process any remaining orders in queue before shutdown
-            if self._order_callback is not None:
-                logger.info("Processing remaining orders before shutdown...")
-                remaining_count = 0
-                while not self.orders_manager.processed_orders_queue.empty():
-                    try:
-                        order = self.orders_manager.processed_orders_queue.get_nowait()
-                        await self._order_callback(order)
-                        remaining_count += 1
-                    except asyncio.QueueEmpty:
-                        break
-                    except Exception as e:
-                        logger.error(f"Error processing remaining order: {e}")
-
-                if remaining_count > 0:
-                    logger.info(f"Processed {remaining_count} remaining orders")
-
-        # Cancel orderbook consumer task if running
-        if (
-            self._orderbook_consumer_task is not None
-            and not self._orderbook_consumer_task.done()
-        ):
-            self._orderbook_consumer_task.cancel()
-            try:
-                await asyncio.wait_for(self._orderbook_consumer_task, timeout=3.0)
-            except asyncio.TimeoutError:
-                pass
-            except asyncio.CancelledError:
-                pass
-
-            # Process any remaining orderbook updates in queue before shutdown
-            if (
-                self._orderbook_callback is not None
-                and self._orderbook_update_queue is not None
-            ):
-                logger.info("Processing remaining orderbook updates before shutdown...")
-                remaining_count = 0
-                while not self._orderbook_update_queue.empty():
-                    try:
-                        update = self._orderbook_update_queue.get_nowait()
-                        await self._orderbook_callback(update)
-                        remaining_count += 1
-                    except asyncio.QueueEmpty:
-                        break
-                    except Exception as e:
-                        logger.error(
-                            f"Error processing remaining orderbook update: {e}"
-                        )
-
-                if remaining_count > 0:
-                    logger.info(
-                        f"Processed {remaining_count} remaining orderbook updates"
-                    )
+        if self._orderbook_consumer is not None:
+            remaining_orderbook_updates = await self._orderbook_consumer.drain_and_stop(
+                self._orderbook_consumer_task
+            )
+            self._orderbook_consumer_task = None
+            if remaining_orderbook_updates > 0:
+                logger.info(
+                    f"Processed {remaining_orderbook_updates} remaining orderbook updates"
+                )
 
         # Close orderbook websocket if connected
         if self._orderbook_ws_client is not None:
@@ -826,88 +828,6 @@ class KuruClient:
             asyncio.create_task(self.stop(sig_num))
         except RuntimeError:
             pass
-
-    async def _consume_orders(self) -> None:
-        """
-        Background task to consume orders from the queue and invoke callback.
-
-        Runs continuously while client is active and callback is set.
-        Handles exceptions from user callbacks gracefully.
-        """
-        try:
-            while True:
-                # Check for shutdown signal
-                if self._shutdown_event.is_set():
-                    break
-
-                # Get order from queue with timeout to check shutdown periodically
-                try:
-                    order = await asyncio.wait_for(
-                        self.orders_manager.processed_orders_queue.get(), timeout=1.0
-                    )
-                except asyncio.TimeoutError:
-                    # No orders, continue loop to check shutdown
-                    continue
-
-                # Skip if callback was cleared
-                if self._order_callback is None:
-                    continue
-
-                # Invoke callback
-                try:
-                    await self._order_callback(order)
-                except Exception as e:
-                    logger.error(
-                        f"Error in order callback for order {order.cloid}: {e}",
-                        exc_info=True,
-                    )
-                    # Continue processing - don't let one error stop the consumer
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"Fatal error in order consumer: {e}", exc_info=True)
-
-    async def _consume_orderbook_updates(self) -> None:
-        """
-        Background task to consume orderbook updates from the queue and invoke callback.
-
-        Runs continuously while client is active and callback is set.
-        Handles exceptions from user callbacks gracefully.
-        """
-        try:
-            while True:
-                # Check for shutdown signal
-                if self._shutdown_event.is_set():
-                    break
-
-                # Get update from queue with timeout to check shutdown periodically
-                try:
-                    update = await asyncio.wait_for(
-                        self._orderbook_update_queue.get(), timeout=1.0
-                    )
-                except asyncio.TimeoutError:
-                    # No updates, continue loop to check shutdown
-                    continue
-
-                # Skip if callback was cleared
-                if self._orderbook_callback is None:
-                    continue
-
-                # Invoke callback
-                try:
-                    await self._orderbook_callback(update)
-                except Exception as e:
-                    logger.error(
-                        f"Error in orderbook callback: {e}",
-                        exc_info=True,
-                    )
-                    # Continue processing - don't let one error stop the consumer
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"Fatal error in orderbook consumer: {e}", exc_info=True)
 
     def _handle_orderbook_error(self, error: Exception) -> None:
         """Handle errors from orderbook websocket client."""
