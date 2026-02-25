@@ -26,3 +26,8 @@ include = ["kuru_sdk_py*"]
 
 [tool.setuptools.package-data]
 "kuru_sdk_py.abis" = ["*.json"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests that require external RPC and credentials",
+]

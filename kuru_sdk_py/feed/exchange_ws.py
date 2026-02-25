@@ -5,10 +5,10 @@ from decimal import Decimal
 from typing import Any, Callable, List, Optional, Tuple, Union
 
 import websockets.asyncio.client
-import websockets.exceptions
 from loguru import logger
 
 from kuru_sdk_py.configs import MarketConfig, WebSocketConfig
+from kuru_sdk_py.feed.base_ws import BaseWebSocketClient
 from kuru_sdk_py.utils.ws_utils import calculate_backoff_delay, format_reconnect_attempts
 
 PRICE_PRECISION_DECIMAL = Decimal(1_000_000_000_000_000_000)
@@ -77,7 +77,7 @@ class MonadDepthUpdate:
 # === MAIN CLIENT CLASS ===
 
 
-class ExchangeWebsocketClient:
+class ExchangeWebsocketClient(BaseWebSocketClient):
     """
     WebSocket client for Exchange orderbook data (Binance-compatible format).
 
@@ -147,52 +147,29 @@ class ExchangeWebsocketClient:
         if websocket_config is None:
             websocket_config = WebSocketConfig()
 
-        # Store config
-        self.websocket_config = websocket_config
-        self._market_config = market_config
-
         # Validation
-        if not ws_url:
-            raise ValueError("ws_url cannot be empty")
-        if not ws_url.startswith(("ws://", "wss://")):
-            raise ValueError("ws_url must start with ws:// or wss://")
         if not market_config.market_address:
             raise ValueError("market_address cannot be empty")
         if not isinstance(update_queue, asyncio.Queue):
             raise ValueError("update_queue must be an asyncio.Queue")
 
-        # Connection parameters
-        self._ws_url = ws_url
+        self._market_config = market_config
+        super().__init__(
+            ws_url=ws_url,
+            websocket_config=websocket_config,
+            on_error=on_error,
+            client_label="ExchangeWebsocketClient",
+            max_reconnect_attempts=websocket_config.max_reconnect_attempts,
+            reconnect_delay=websocket_config.reconnect_delay,
+            max_reconnect_delay=60.0,
+            websocket_connect=websockets.asyncio.client.connect,
+            backoff_fn=calculate_backoff_delay,
+            format_attempts_fn=format_reconnect_attempts,
+        )
+
         self._market_address = market_config.market_address.lower()  # Normalize to lowercase
         self._update_queue = update_queue
-        self._on_error = on_error
-
-        # Get reconnection parameters from config
-        self._max_reconnect_attempts = websocket_config.max_reconnect_attempts
-        self._reconnect_delay = websocket_config.reconnect_delay
         self._market_depth = websocket_config.exchange_market_depth
-
-        # Connection state
-        self._websocket: Optional[websockets.asyncio.client.ClientConnection] = None
-        self._connected = False
-        self._closing = False
-        self._subscribed = False
-
-        # Reconnection state
-        self._reconnect_count = 0
-        self._current_reconnect_delay = self._reconnect_delay
-        self._reconnect_task: Optional[asyncio.Task] = None
-
-        # Background tasks
-        self._message_loop_task: Optional[asyncio.Task] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
-
-        # Heartbeat configuration from config
-        self._heartbeat_interval = websocket_config.heartbeat_interval
-        self._heartbeat_timeout = websocket_config.heartbeat_timeout
-
-        # Thread safety
-        self._lock = asyncio.Lock()
 
         logger.info(
             f"Initialized ExchangeWebsocketClient for market {self._market_address}"
@@ -239,87 +216,6 @@ class ExchangeWebsocketClient:
         """
         return Decimal(int(size_str)) / Decimal(size_precision)
 
-    async def connect(self) -> None:
-        """
-        Establish WebSocket connection and start message processing.
-
-        This method:
-        1. Connects to the WebSocket server
-        2. Starts the message processing loop
-        3. Starts the heartbeat monitor
-        4. Subscribes to the market orderbook
-
-        Raises:
-            RuntimeError: If already connected or closing
-            ConnectionError: If connection fails
-        """
-        async with self._lock:
-            await self._connect_unlocked()
-
-    async def _connect_unlocked(self) -> None:
-        """Connect without lock re-entry.
-
-        Caller must hold ``self._lock``.
-        """
-        if self._connected:
-            logger.warning("Already connected")
-            return
-
-        if self._closing:
-            raise RuntimeError("Cannot connect while closing")
-
-        try:
-            logger.info(f"Connecting to {self._ws_url}")
-
-            # Use websockets.asyncio.client.connect with built-in ping/pong
-            self._websocket = await websockets.asyncio.client.connect(
-                self._ws_url,
-                ping_interval=self._heartbeat_interval,
-                ping_timeout=self._heartbeat_timeout,
-                open_timeout=10.0,
-                close_timeout=10.0,
-                max_size=10 * 1024 * 1024,  # 10MB max message size
-            )
-
-            self._connected = True
-            self._reconnect_count = 0  # Reset on successful connection
-
-            logger.info("WebSocket connected successfully")
-
-            # Start background tasks
-            self._message_loop_task = asyncio.create_task(self._message_loop())
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
-
-            # Subscribe to market
-            await self.subscribe()
-
-        except websockets.exceptions.InvalidURI as e:
-            self._connected = False
-            self._websocket = None
-            logger.error(f"Invalid WebSocket URI: {e}")
-            raise ValueError(f"Invalid WebSocket URI: {self._ws_url}") from e
-        except OSError as e:
-            self._connected = False
-            self._websocket = None
-            logger.error(f"Network error: {e}")
-            raise ConnectionError(f"Failed to connect to {self._ws_url}") from e
-        except Exception as e:
-            self._connected = False
-            self._websocket = None
-            logger.error(f"Connection failed: {e}")
-            raise
-
-    async def _start_reconnect_task(self) -> None:
-        """Start a single reconnect loop if one is not already running."""
-        async with self._lock:
-            if self._connected:
-                return
-            if self._closing:
-                return
-            if self._reconnect_task is not None and not self._reconnect_task.done():
-                return
-            self._reconnect_task = asyncio.create_task(self._reconnect())
-
     async def subscribe(self) -> None:
         """
         Subscribe to the market's orderbook depth stream.
@@ -351,188 +247,6 @@ class ExchangeWebsocketClient:
         except Exception as e:
             logger.error(f"Failed to send subscription request: {e}")
             raise
-
-    async def close(self) -> None:
-        """
-        Close the WebSocket connection and cleanup resources.
-
-        This method:
-        1. Sets closing flag to prevent reconnection
-        2. Cancels background tasks
-        3. Closes WebSocket connection
-        4. Resets state
-        """
-        reconnect_task: Optional[asyncio.Task] = None
-        async with self._lock:
-            if self._closing:
-                return
-
-            self._closing = True
-            reconnect_task = self._reconnect_task
-            self._reconnect_task = None
-            logger.info("Closing WebSocket connection")
-
-        await self._cleanup_connection()
-
-        if reconnect_task is not None and not reconnect_task.done():
-            reconnect_task.cancel()
-            try:
-                await reconnect_task
-            except asyncio.CancelledError:
-                pass
-
-        logger.info("WebSocket closed successfully")
-
-    def is_connected(self) -> bool:
-        """
-        Check if currently connected to WebSocket.
-
-        Returns:
-            True if connected, False otherwise
-        """
-        return self._connected and self._websocket is not None
-
-    async def _cleanup_connection(self) -> None:
-        """Clean up connection resources."""
-        current_task = asyncio.current_task()
-        # Cancel background tasks
-        if self._message_loop_task:
-            self._message_loop_task.cancel()
-            if self._message_loop_task is not current_task:
-                try:
-                    await self._message_loop_task
-                except asyncio.CancelledError:
-                    pass
-            self._message_loop_task = None
-
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            if self._heartbeat_task is not current_task:
-                try:
-                    await self._heartbeat_task
-                except asyncio.CancelledError:
-                    pass
-            self._heartbeat_task = None
-
-        # Close WebSocket
-        if self._websocket:
-            try:
-                await self._websocket.close()
-            except Exception as e:
-                logger.warning(f"Error closing websocket: {e}")
-            self._websocket = None
-
-        self._connected = False
-        self._subscribed = False
-
-    async def _reconnect(self) -> None:
-        """
-        Attempt to reconnect with exponential backoff.
-
-        Backoff formula: delay = base_delay * (2 ^ attempt) + jitter
-        Max delay capped at 60 seconds.
-        """
-        try:
-            while True:
-                async with self._lock:
-                    if self._closing:
-                        logger.info("Not reconnecting - client is closing")
-                        return
-
-                    if (
-                        self._max_reconnect_attempts > 0
-                        and self._reconnect_count >= self._max_reconnect_attempts
-                    ):
-                        error_msg = (
-                            f"Max reconnection attempts ({self._max_reconnect_attempts}) reached"
-                        )
-                        logger.error(error_msg)
-                        await self._invoke_error_callback(ConnectionError(error_msg))
-                        return
-
-                    # Calculate exponential backoff with jitter
-                    self._current_reconnect_delay = calculate_backoff_delay(
-                        self._reconnect_count, self._reconnect_delay, 60.0
-                    )
-                    self._reconnect_count += 1
-                    attempts_msg = format_reconnect_attempts(
-                        self._reconnect_count, self._max_reconnect_attempts
-                    )
-                    delay = self._current_reconnect_delay
-
-                logger.info(f"Reconnection attempt {attempts_msg} in {delay:.2f}s")
-                await asyncio.sleep(delay)
-
-                async with self._lock:
-                    if self._closing:
-                        return
-
-                try:
-                    await self._cleanup_connection()
-                    await self.connect()
-                    logger.info("Reconnection successful")
-                    return
-                except Exception as e:
-                    logger.error(f"Reconnection failed: {e}")
-                    continue
-        finally:
-            async with self._lock:
-                if self._reconnect_task is asyncio.current_task():
-                    self._reconnect_task = None
-
-    async def _message_loop(self) -> None:
-        """
-        Main message processing loop.
-
-        Continuously receives and processes binary messages from WebSocket.
-        Handles connection errors and triggers reconnection.
-        """
-        logger.info("Message loop started")
-
-        try:
-            while self._connected and not self._closing:
-                if self._websocket is None:
-                    logger.warning("WebSocket is None in message loop")
-                    break
-
-                try:
-                    # Receive message with timeout
-                    message = await asyncio.wait_for(
-                        self._websocket.recv(),
-                        timeout=self._heartbeat_interval
-                        + self._heartbeat_timeout
-                        + 5.0,
-                    )
-
-                    # Process message (binary or text)
-                    await self._handle_message(message)
-
-                except asyncio.TimeoutError:
-                    logger.warning("Message receive timeout - connection may be stale")
-                    break
-
-                except websockets.exceptions.ConnectionClosed as e:
-                    logger.warning(f"WebSocket connection closed: {e}")
-                    break
-
-                except Exception as e:
-                    logger.error(f"Error receiving message: {e}")
-                    await self._invoke_error_callback(e)
-                    # Continue loop - don't break on parse errors
-
-        except asyncio.CancelledError:
-            logger.debug("Message loop cancelled")
-
-        except Exception as e:
-            logger.error(f"Fatal error in message loop: {e}")
-            await self._invoke_error_callback(e)
-
-        finally:
-            logger.info("Message loop ended")
-
-            # If we exited due to connection issue (not intentional close), reconnect
-            if not self._closing:
-                asyncio.create_task(self._handle_connection_loss())
 
     async def _handle_message(self, message: Union[str, bytes]) -> None:
         """
@@ -737,111 +451,6 @@ class ExchangeWebsocketClient:
             logger.error(f"Message data: {data}")
             await self._invoke_error_callback(e)
 
-    async def _heartbeat_monitor(self) -> None:
-        """
-        Monitor connection health using websockets' built-in ping/pong.
-
-        This monitor checks if the connection is alive by relying on
-        websockets library's automatic ping/pong mechanism. If the
-        connection becomes stale, trigger reconnection.
-        """
-        while self._connected and not self._closing:
-            try:
-                await asyncio.sleep(self._heartbeat_interval)
-
-                # Check if websocket is still open
-                if self._websocket is None:
-                    logger.warning("WebSocket is None in heartbeat monitor")
-                    asyncio.create_task(self._handle_connection_loss())
-                    break
-
-                # websockets library handles ping/pong automatically
-                # If connection is stale, it will raise an exception
-                # We just need to catch it in the message loop
-
-            except asyncio.CancelledError:
-                logger.debug("Heartbeat monitor cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Heartbeat monitor error: {e}")
-                await self._invoke_error_callback(e)
-                asyncio.create_task(self._handle_connection_loss())
-                break
-
-    async def _handle_connection_loss(self) -> None:
-        """
-        Handle detected connection loss.
-
-        This method:
-        1. Logs the connection loss
-        2. Cleans up current connection
-        3. Initiates reconnection
-        """
-        if self._closing:
-            return
-
-        logger.warning("Connection loss detected")
-
-        async with self._lock:
-            self._connected = False
-
-        await self._invoke_error_callback(ConnectionError("Connection lost"))
-
-        # Initiate reconnection
-        await self._start_reconnect_task()
-
-    async def _invoke_error_callback(self, error: Exception) -> None:
-        """
-        Invoke the on_error callback if provided.
-
-        Supports both sync and async callbacks.
-
-        Args:
-            error: Exception to pass to callback
-        """
-        if self._on_error is None:
-            return
-
-        try:
-            if asyncio.iscoroutinefunction(self._on_error):
-                await self._on_error(error)
-            else:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self._on_error, error)
-
-        except Exception as e:
-            logger.error(f"Error in on_error callback: {e}", exc_info=True)
-
-    async def __aenter__(self) -> "ExchangeWebsocketClient":
-        """
-        Async context manager entry.
-
-        Automatically connects when entering the context.
-
-        Returns:
-            Self for use in the context
-        """
-        await self.connect()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: Optional[type],
-        exc_val: Optional[Exception],
-        exc_tb: Optional[Any],
-    ) -> bool:
-        """
-        Async context manager exit.
-
-        Automatically closes connection when exiting the context.
-
-        Args:
-            exc_type: Exception type if an exception occurred
-            exc_val: Exception value if an exception occurred
-            exc_tb: Exception traceback if an exception occurred
-
-        Returns:
-            False to propagate any exceptions
-        """
-        await self.close()
-        return False  # Propagate exceptions
+    async def _on_cleanup(self) -> None:
+        """No additional subclass cleanup required."""
+        return None

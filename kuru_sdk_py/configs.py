@@ -5,6 +5,7 @@ from web3 import Web3, Account
 
 from kuru_sdk_py.utils import load_abi, is_native_token
 from kuru_sdk_py.utils.validation import validate_ethereum_address, validate_private_key
+from kuru_sdk_py.exceptions import KuruConfigError
 from kuru_sdk_py.config_defaults import (
     DEFAULT_MM_ENTRYPOINT_ADDRESS,
     DEFAULT_MARGIN_CONTRACT_ADDRESS,
@@ -186,6 +187,164 @@ class CacheConfig:
     check_interval: float = DEFAULT_CACHE_CHECK_INTERVAL
     reconciliation_interval: float = DEFAULT_RECONCILIATION_INTERVAL
     reconciliation_threshold: float = DEFAULT_RECONCILIATION_THRESHOLD
+
+
+@dataclass
+class ClientConfig:
+    """
+    Convenience bundle for constructing a KuruClient from one config object.
+
+    This is additive and does not replace KuruClient.create(...).
+    """
+
+    market_address: str
+    private_key: str
+    rpc_url: str = DEFAULT_RPC_URL
+    rpc_ws_url: str = DEFAULT_RPC_WS_URL
+    kuru_ws_url: str = DEFAULT_KURU_WS_URL
+    kuru_api_url: str = DEFAULT_KURU_API_URL
+    exchange_ws_url: str = DEFAULT_EXCHANGE_WS_URL
+    post_only: bool = DEFAULT_POST_ONLY
+    auto_approve: bool = DEFAULT_AUTO_APPROVE
+    use_access_list: bool = DEFAULT_USE_ACCESS_LIST
+    timeout: int = DEFAULT_TRANSACTION_TIMEOUT
+    poll_latency: float = DEFAULT_POLL_LATENCY
+    max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS
+    reconnect_delay: float = DEFAULT_RECONNECT_DELAY
+    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL
+    heartbeat_timeout: float = DEFAULT_HEARTBEAT_TIMEOUT
+    exchange_market_depth: str = DEFAULT_EXCHANGE_MARKET_DEPTH
+    fetch_market_from_chain: bool = True
+
+    def to_configs(
+        self,
+    ) -> tuple[
+        "MarketConfig",
+        ConnectionConfig,
+        WalletConfig,
+        TransactionConfig,
+        WebSocketConfig,
+        OrderExecutionConfig,
+    ]:
+        """Convert to individual config objects used by KuruClient.create()."""
+        connection_config = ConnectionConfig(
+            rpc_url=self.rpc_url,
+            rpc_ws_url=self.rpc_ws_url,
+            kuru_ws_url=self.kuru_ws_url,
+            kuru_api_url=self.kuru_api_url,
+            exchange_ws_url=self.exchange_ws_url,
+        )
+        wallet_config = WalletConfig(private_key=self.private_key)
+        market_config = ConfigManager.load_market_config(
+            market_address=self.market_address,
+            fetch_from_chain=self.fetch_market_from_chain,
+            rpc_url=self.rpc_url,
+        )
+        transaction_config = TransactionConfig(
+            timeout=self.timeout,
+            poll_latency=self.poll_latency,
+        )
+        websocket_config = WebSocketConfig(
+            max_reconnect_attempts=self.max_reconnect_attempts,
+            reconnect_delay=self.reconnect_delay,
+            heartbeat_interval=self.heartbeat_interval,
+            heartbeat_timeout=self.heartbeat_timeout,
+            exchange_market_depth=self.exchange_market_depth,
+        )
+        order_execution_config = OrderExecutionConfig(
+            post_only=self.post_only,
+            auto_approve=self.auto_approve,
+            use_access_list=self.use_access_list,
+        )
+        return (
+            market_config,
+            connection_config,
+            wallet_config,
+            transaction_config,
+            websocket_config,
+            order_execution_config,
+        )
+
+    @classmethod
+    def from_env(
+        cls,
+        market_address: Optional[str] = None,
+        private_key: Optional[str] = None,
+    ) -> "ClientConfig":
+        """Load client config from environment variables with defaults."""
+        import os
+        from kuru_sdk_py.config_defaults import (
+            ENV_AUTO_APPROVE,
+            ENV_EXCHANGE_MARKET_DEPTH,
+            ENV_HEARTBEAT_INTERVAL,
+            ENV_HEARTBEAT_TIMEOUT,
+            ENV_MARKET_ADDRESS,
+            ENV_MAX_RECONNECT_ATTEMPTS,
+            ENV_POLL_LATENCY,
+            ENV_POST_ONLY,
+            ENV_PRIVATE_KEY,
+            ENV_RECONNECT_DELAY,
+            ENV_RPC_URL,
+            ENV_RPC_WS_URL,
+            ENV_KURU_WS_URL,
+            ENV_KURU_API_URL,
+            ENV_EXCHANGE_WS_URL,
+            ENV_TRANSACTION_TIMEOUT,
+            ENV_USE_ACCESS_LIST,
+        )
+        from kuru_sdk_py.utils.validation import validate_boolean_env
+
+        market_address = market_address or os.getenv(ENV_MARKET_ADDRESS)
+        private_key = private_key or os.getenv(ENV_PRIVATE_KEY)
+
+        if not market_address:
+            raise KuruConfigError(
+                f"market_address is required. Provide argument or set {ENV_MARKET_ADDRESS}."
+            )
+        if not private_key:
+            raise KuruConfigError(
+                f"private_key is required. Provide argument or set {ENV_PRIVATE_KEY}."
+            )
+
+        post_only = DEFAULT_POST_ONLY
+        if (env_post_only := os.getenv(ENV_POST_ONLY)) is not None:
+            post_only = validate_boolean_env(env_post_only, "post_only")
+
+        auto_approve = DEFAULT_AUTO_APPROVE
+        if (env_auto_approve := os.getenv(ENV_AUTO_APPROVE)) is not None:
+            auto_approve = validate_boolean_env(env_auto_approve, "auto_approve")
+
+        use_access_list = DEFAULT_USE_ACCESS_LIST
+        if (env_use_access_list := os.getenv(ENV_USE_ACCESS_LIST)) is not None:
+            use_access_list = validate_boolean_env(env_use_access_list, "use_access_list")
+
+        return cls(
+            market_address=market_address,
+            private_key=private_key,
+            rpc_url=os.getenv(ENV_RPC_URL, DEFAULT_RPC_URL),
+            rpc_ws_url=os.getenv(ENV_RPC_WS_URL, DEFAULT_RPC_WS_URL),
+            kuru_ws_url=os.getenv(ENV_KURU_WS_URL, DEFAULT_KURU_WS_URL),
+            kuru_api_url=os.getenv(ENV_KURU_API_URL, DEFAULT_KURU_API_URL),
+            exchange_ws_url=os.getenv(ENV_EXCHANGE_WS_URL, DEFAULT_EXCHANGE_WS_URL),
+            post_only=post_only,
+            auto_approve=auto_approve,
+            use_access_list=use_access_list,
+            timeout=int(os.getenv(ENV_TRANSACTION_TIMEOUT, DEFAULT_TRANSACTION_TIMEOUT)),
+            poll_latency=float(os.getenv(ENV_POLL_LATENCY, DEFAULT_POLL_LATENCY)),
+            max_reconnect_attempts=int(
+                os.getenv(ENV_MAX_RECONNECT_ATTEMPTS, DEFAULT_MAX_RECONNECT_ATTEMPTS)
+            ),
+            reconnect_delay=float(os.getenv(ENV_RECONNECT_DELAY, DEFAULT_RECONNECT_DELAY)),
+            heartbeat_interval=float(
+                os.getenv(ENV_HEARTBEAT_INTERVAL, DEFAULT_HEARTBEAT_INTERVAL)
+            ),
+            heartbeat_timeout=float(
+                os.getenv(ENV_HEARTBEAT_TIMEOUT, DEFAULT_HEARTBEAT_TIMEOUT)
+            ),
+            exchange_market_depth=os.getenv(
+                ENV_EXCHANGE_MARKET_DEPTH, DEFAULT_EXCHANGE_MARKET_DEPTH
+            ),
+        )
 
 
 # ============================================================================
@@ -399,7 +558,7 @@ class ConfigManager:
 
         # Validate required field
         if not private_key:
-            raise ValueError(
+            raise KuruConfigError(
                 "private_key is required. "
                 f"Provide it as argument or set {ENV_PRIVATE_KEY} environment variable."
             )
@@ -541,7 +700,7 @@ class ConfigManager:
             market_address = os.getenv(ENV_MARKET_ADDRESS)
 
         if not market_address:
-            raise ValueError(
+            raise KuruConfigError(
                 "market_address is required. "
                 f"Provide it as argument or set {ENV_MARKET_ADDRESS} environment variable."
             )
@@ -560,7 +719,7 @@ class ConfigManager:
         # Otherwise, construct directly from provided kwargs
         # (requires all MarketConfig fields)
         if not kwargs:
-            raise ValueError(
+            raise KuruConfigError(
                 "Either set fetch_from_chain=True or provide all MarketConfig fields"
             )
 
@@ -718,7 +877,7 @@ class ConfigManager:
             if env_sub := os.getenv(ENV_RPC_LOGS_SUBSCRIPTION):
                 env_sub = env_sub.strip()
                 if not env_sub:
-                    raise ValueError(
+                    raise KuruConfigError(
                         f"{ENV_RPC_LOGS_SUBSCRIPTION} cannot be empty when set."
                     )
                 config_dict["rpc_logs_subscription"] = env_sub
@@ -747,7 +906,9 @@ class ConfigManager:
         if rpc_logs_subscription is not None:
             rpc_logs_subscription = rpc_logs_subscription.strip()
             if not rpc_logs_subscription:
-                raise ValueError("rpc_logs_subscription cannot be empty when provided.")
+                raise KuruConfigError(
+                    "rpc_logs_subscription cannot be empty when provided."
+                )
             config_dict["rpc_logs_subscription"] = rpc_logs_subscription
         if rpc_ws_max_reconnect_attempts is not None:
             config_dict["rpc_ws_max_reconnect_attempts"] = rpc_ws_max_reconnect_attempts
@@ -1115,7 +1276,7 @@ def initialize_kuru_mm_config(
     kuru_api_url: str = DEFAULT_KURU_API_URL,
 ) -> KuruMMConfig:
     if not private_key:
-        raise ValueError("private_key cannot be None or empty")
+        raise KuruConfigError("private_key cannot be None or empty")
 
     account = Account.from_key(private_key)
     user_address = account.address
