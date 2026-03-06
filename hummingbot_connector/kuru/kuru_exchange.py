@@ -117,6 +117,12 @@ class KuruExchange(ExchangePyBase):
         kuru_ws_url: Optional[str] = None,
         kuru_api_url: Optional[str] = None,
     ):
+        if len(trading_pairs) != 1:
+            raise ValueError(
+                "KuruExchange currently supports exactly one trading pair per connector instance. "
+                "Multi-market Hummingbot routing has not been implemented yet."
+            )
+
         # Store all custom fields BEFORE super().__init__()
         self._private_key = private_key
         self._market_address = market_address

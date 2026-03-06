@@ -30,8 +30,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kuru_sdk_py.client import KuruClient
-from kuru_sdk_py.manager.order import Order, OrderType, OrderSide
-from kuru_sdk_py.configs import initialize_kuru_mm_config, market_config_from_market_address
+from kuru_sdk_py.manager.order import Order
+from kuru_sdk_py.configs import ConfigManager
 from kuru_sdk_py.transaction.access_list import build_access_list_for_cancel_only
 
 
@@ -56,21 +56,32 @@ async def main():
     # Load environment variables
     load_dotenv()
 
-    # Initialize configs
-    kuru_config = initialize_kuru_mm_config(
+    # Initialize configs using the current SDK split-config API
+    wallet_config = ConfigManager.load_wallet_config(
         private_key=os.getenv("PRIVATE_KEY"),
-        rpc_url=os.getenv("RPC_URL", "https://rpc.monad.xyz/"),
-        rpc_ws_url=os.getenv("RPC_WS_URL", "wss://rpc.monad.xyz/")
     )
+    logger.info(f"Wallet: {wallet_config.user_address}")
 
-    market_config = market_config_from_market_address(
-        market_address=os.getenv("MARKET_ADDRESS", "0x6eB96A614E49b0dAc69F48E799C5C825AF9B33fA"),
-        rpc_url=os.getenv("RPC_URL", "https://rpc.monad.xyz/")
+    connection_config = ConfigManager.load_connection_config(
+        rpc_url=os.getenv("RPC_URL", "https://rpc.monad.xyz/"),
+        rpc_ws_url=os.getenv("RPC_WS_URL", "wss://rpc.monad.xyz/"),
     )
+    logger.info(f"RPC: {connection_config.rpc_url}")
+
+    market_config = ConfigManager.load_market_config(
+        market_address=os.getenv("MARKET_ADDRESS", "0x6eB96A614E49b0dAc69F48E799C5C825AF9B33fA"),
+        fetch_from_chain=True,
+        rpc_url=connection_config.rpc_url,
+    )
+    logger.info(f"Market: {market_config.market_symbol}")
 
     # Create client
     logger.info("Creating KuruClient...")
-    client = await KuruClient.create(market_config, kuru_config)
+    client = await KuruClient.create(
+        market_config=market_config,
+        connection_config=connection_config,
+        wallet_config=wallet_config,
+    )
 
     # Set callback to print orders
     client.set_order_callback(print_order_callback)

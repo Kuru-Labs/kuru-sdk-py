@@ -119,6 +119,18 @@ class TestKuruUtils:
         assert trading_pair_from_market_config(mc) == "ETH-USDC"
 
 
+@pytest.mark.skipif(not HAS_HUMMINGBOT, reason="hummingbot not installed")
+def test_kuru_exchange_rejects_multiple_pairs():
+    from hummingbot_connector.kuru.kuru_exchange import KuruExchange
+
+    with pytest.raises(ValueError, match="exactly one trading pair"):
+        KuruExchange(
+            private_key="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            market_address="0x065C9d28E428A0db40191a54d33d5b7c71a9C394",
+            trading_pairs=["MON-USDC", "MON-USDT"],
+        )
+
+
 # ============================================================================
 # Order State Mapping Tests
 # ============================================================================

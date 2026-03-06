@@ -5,6 +5,7 @@ from typing import Protocol, runtime_checkable, Optional
 from web3 import AsyncWeb3
 from eth_account.signers.local import LocalAccount
 import asyncio
+import time
 
 from .nonce_manager import NonceManager
 from kuru_sdk_py.exceptions import (
@@ -14,6 +15,10 @@ from kuru_sdk_py.exceptions import (
 )
 from kuru_sdk_py.utils.errors import decode_contract_error, extract_error_selector
 from kuru_sdk_py.configs import TransactionConfig
+from kuru_sdk_py.config_defaults import (
+    DEFAULT_CHAIN_ID,
+    DEFAULT_GAS_PRICE_REFRESH_INTERVAL,
+)
 
 
 @runtime_checkable
@@ -24,6 +29,11 @@ class AsyncTransactionSenderProtocol(Protocol):
     account: LocalAccount
     user_address: str
     transaction_config: TransactionConfig
+
+    async def _get_effective_gas_price(
+        self,
+        override_gas_price: Optional[int] = None,
+    ) -> int: ...
 
 
 class AsyncTransactionSenderMixin:
@@ -44,6 +54,127 @@ class AsyncTransactionSenderMixin:
             async def do_something(self):
                 tx_hash = await self._send_transaction(some_function_call)
     """
+
+    @staticmethod
+    def _is_nonce_too_low_error(error: Exception) -> bool:
+        """Return True when exception indicates nonce-too-low failure."""
+        error_str = str(error).lower()
+        if "nonce too low" in error_str:
+            return True
+        if "already known" in error_str:
+            return True
+        if (
+            hasattr(error, "args")
+            and error.args
+            and isinstance(error.args[0], dict)
+            and error.args[0].get("code") in (-32000, -32010)
+            and "nonce" in str(error.args[0]).lower()
+        ):
+            return True
+        return False
+
+    def _ensure_gas_price_state(self) -> None:
+        """Initialize gas price cache state lazily for mixin users."""
+        if hasattr(self, "_gas_price_lock"):
+            return
+
+        self._gas_price_lock = asyncio.Lock()
+        self._cached_gas_price: Optional[int] = None
+        self._cached_gas_price_updated_at: Optional[float] = None
+        self._gas_price_worker_task: Optional[asyncio.Task] = None
+        self._gas_price_worker_running = False
+
+    def _get_chain_id(self) -> int:
+        """Read configured chain ID, falling back for lightweight test doubles."""
+        tx_config = getattr(self, "transaction_config", None)
+        return int(getattr(tx_config, "chain_id", DEFAULT_CHAIN_ID))
+
+    def _get_gas_price_refresh_interval(self) -> float:
+        """Read configured refresh interval, falling back for lightweight test doubles."""
+        tx_config = getattr(self, "transaction_config", None)
+        return float(
+            getattr(
+                tx_config,
+                "gas_price_refresh_interval",
+                DEFAULT_GAS_PRICE_REFRESH_INTERVAL,
+            )
+        )
+
+    async def _refresh_cached_gas_price(self) -> int:
+        """Fetch current gas price from RPC and store it in cache."""
+        self._ensure_gas_price_state()
+
+        latest_gas_price = await self.w3.eth.gas_price
+        async with self._gas_price_lock:
+            self._cached_gas_price = int(latest_gas_price)
+            self._cached_gas_price_updated_at = time.monotonic()
+            return self._cached_gas_price
+
+    async def _gas_price_worker_loop(self) -> None:
+        """Background loop that refreshes gas price at fixed interval."""
+        interval = max(0.1, self._get_gas_price_refresh_interval())
+        while self._gas_price_worker_running:
+            try:
+                await self._refresh_cached_gas_price()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"Gas price refresh failed: {e}")
+
+            await asyncio.sleep(interval)
+
+    async def start_gas_price_worker(self) -> None:
+        """Start background gas price polling worker."""
+        self._ensure_gas_price_state()
+
+        if self._gas_price_worker_running:
+            return
+
+        self._gas_price_worker_running = True
+        self._gas_price_worker_task = asyncio.create_task(self._gas_price_worker_loop())
+
+        # Prime cache immediately so first tx avoids a cold gas price fetch.
+        try:
+            await self._refresh_cached_gas_price()
+        except Exception as e:
+            logger.debug(f"Initial gas price fetch failed, worker will retry: {e}")
+
+    async def stop_gas_price_worker(self) -> None:
+        """Stop background gas price polling worker."""
+        self._ensure_gas_price_state()
+
+        self._gas_price_worker_running = False
+        if self._gas_price_worker_task is not None:
+            self._gas_price_worker_task.cancel()
+            try:
+                await self._gas_price_worker_task
+            except asyncio.CancelledError:
+                pass
+            self._gas_price_worker_task = None
+
+    async def _get_effective_gas_price(
+        self,
+        override_gas_price: Optional[int] = None,
+    ) -> int:
+        """
+        Return gas price for transaction submission.
+
+        Priority:
+        1) Explicit per-call override
+        2) Cached gas price from background worker
+        3) One-off fetch + cache fill
+        """
+        if override_gas_price is not None:
+            return int(override_gas_price)
+
+        self._ensure_gas_price_state()
+        await self.start_gas_price_worker()
+
+        async with self._gas_price_lock:
+            if self._cached_gas_price is not None:
+                return self._cached_gas_price
+
+        return await self._refresh_cached_gas_price()
 
     async def _send_transaction(
         self: AsyncTransactionSenderProtocol,
@@ -67,83 +198,133 @@ class AsyncTransactionSenderMixin:
             ValueError: If transaction parameters are invalid
             Exception: If transaction fails
         """
+        max_nonce_retries = 5
+        attempt = 0
+        tx = {}
+
         try:
-            # Get nonce from local manager (fetches from RPC only if not initialized)
-            nonce = await NonceManager.get_and_increment_nonce(
-                self.w3, self.user_address
-            )
-
-            # Get gas price
-            if gas_price is None:
-                gas_price = await self.w3.eth.gas_price
-
-            # Build transaction parameters
-            tx_params = {
-                "from": self.user_address,
-                "nonce": nonce,
-                "value": value,
-                "gasPrice": gas_price,
-            }
-
-            # Add access list if provided
-            if access_list:
-                tx_params["accessList"] = access_list
-
-            # Build transaction
-            tx = await function_call.build_transaction(tx_params)
-
-            # Estimate gas
-            try:
-                estimated_gas = await self.w3.eth.estimate_gas(tx)
-
-                # Manually adjust gas when access list is provided
-                # RPC may overestimate gas per storage slot
-                if access_list:
-                    total_storage_slots = sum(
-                        len(entry.get("storageKeys", [])) for entry in access_list
+            t_fn_start = time.perf_counter()
+            while True:
+                attempt += 1
+                try:
+                    t0 = time.perf_counter()
+                    nonce = await NonceManager.get_and_increment_nonce(
+                        self.w3, self.user_address
                     )
-                    # Use config for gas adjustment
-                    adjusted_gas = estimated_gas - (
-                        total_storage_slots
-                        * self.transaction_config.gas_adjustment_per_slot
-                    ) + self.transaction_config.gas_buffer
-                    final_gas = int(
-                        adjusted_gas * self.transaction_config.gas_buffer_multiplier
+                    dt_nonce = time.perf_counter() - t0
+
+                    t0 = time.perf_counter()
+                    effective_gas_price = await self._get_effective_gas_price(gas_price)
+                    dt_gas_price = time.perf_counter() - t0
+
+                    # Build transaction parameters
+                    tx_params = {
+                        "from": self.user_address,
+                        "nonce": nonce,
+                        "value": value,
+                        "gasPrice": effective_gas_price,
+                        "chainId": self._get_chain_id(),
+                    }
+
+                    # Add access list if provided
+                    if access_list:
+                        tx_params["accessList"] = access_list
+
+                    # Build transaction via public web3 API while preventing its internal
+                    # default gas estimation by supplying a temporary gas value.
+                    # We remove this placeholder before our single explicit estimate call.
+                    t0 = time.perf_counter()
+                    tx = await function_call.build_transaction(
+                        {
+                            **tx_params,
+                            # Placeholder to skip build_transaction default gas estimation.
+                            "gas": 21_000,
+                        }
                     )
-                    tx["gas"] = final_gas
-                else:
-                    tx["gas"] = int(estimated_gas)
-            except Exception as e:
-                # Try to decode contract error for better error message
-                decoded_error = decode_contract_error(e)
-                selector = extract_error_selector(e)
+                    tx.pop("gas", None)
+                    dt_build_tx = time.perf_counter() - t0
 
-                if decoded_error:
-                    error_msg = f"Transaction would revert: {decoded_error}"
-                    logger.error(
-                        f"Gas estimation failed with contract error: {decoded_error}"
+                    # Estimate gas
+                    try:
+                        t0 = time.perf_counter()
+                        estimated_gas = await self.w3.eth.estimate_gas(tx)
+                        dt_estimate_gas = time.perf_counter() - t0
+
+                        # Manually adjust gas when access list is provided
+                        # RPC may overestimate gas per storage slot
+                        if access_list:
+                            total_storage_slots = sum(
+                                len(entry.get("storageKeys", [])) for entry in access_list
+                            )
+                            # Use config for gas adjustment
+                            adjusted_gas = estimated_gas - (
+                                total_storage_slots
+                                * self.transaction_config.gas_adjustment_per_slot
+                            ) + self.transaction_config.gas_buffer
+                            candidate_gas = int(
+                                adjusted_gas * self.transaction_config.gas_buffer_multiplier
+                            )
+                            if candidate_gas < 21_000:
+                                logger.warning(
+                                    "Access-list gas adjustment produced non-viable gas "
+                                    f"(estimated={estimated_gas}, adjusted={candidate_gas}, "
+                                    f"slots={total_storage_slots}); falling back to estimated gas"
+                                )
+                                tx["gas"] = int(estimated_gas)
+                            else:
+                                tx["gas"] = candidate_gas
+                        else:
+                            tx["gas"] = int(estimated_gas)
+                    except Exception as e:
+                        # Try to decode contract error for better error message
+                        decoded_error = decode_contract_error(e)
+                        selector = extract_error_selector(e)
+
+                        if decoded_error:
+                            error_msg = f"Transaction would revert: {decoded_error}"
+                            logger.error(
+                                f"Gas estimation failed with contract error: {decoded_error}"
+                            )
+                            logger.debug(f"Original exception: {e}")
+                        else:
+                            error_msg = f"Transaction would fail: {e}"
+                            logger.error(f"Gas estimation failed: {e}")
+
+                        raise KuruContractError(
+                            error_msg,
+                            revert_reason=decoded_error,
+                            selector=selector,
+                        ) from e
+
+                    t0 = time.perf_counter()
+                    signed_tx = self.account.sign_transaction(tx)
+                    dt_sign = time.perf_counter() - t0
+
+                    t0 = time.perf_counter()
+                    tx_hash = await self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                    dt_send_raw = time.perf_counter() - t0
+                    tx_hash_hex = tx_hash.hex()
+
+                    logger.info(
+                        f"tx_timings | "
+                        f"nonce={dt_nonce*1000:.1f}ms "
+                        f"gas_price={dt_gas_price*1000:.1f}ms "
+                        f"build_tx={dt_build_tx*1000:.1f}ms "
+                        f"estimate_gas={dt_estimate_gas*1000:.1f}ms "
+                        f"sign={dt_sign*1000:.1f}ms "
+                        f"send_raw={dt_send_raw*1000:.1f}ms "
+                        f"total={(time.perf_counter()-t_fn_start)*1000:.1f}ms"
                     )
-                    logger.debug(f"Original exception: {e}")
-                else:
-                    error_msg = f"Transaction would fail: {e}"
-                    logger.error(f"Gas estimation failed: {e}")
-
-                raise KuruContractError(
-                    error_msg,
-                    revert_reason=decoded_error,
-                    selector=selector,
-                ) from e
-
-            # Sign transaction
-            signed_tx = self.account.sign_transaction(tx)
-
-            # Send transaction
-            tx_hash = await self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-            tx_hash_hex = tx_hash.hex()
-
-            logger.info(f"Transaction sent: {tx_hash_hex}")
-            return tx_hash_hex
-
+                    return tx_hash_hex
+                except Exception as e:
+                    if self._is_nonce_too_low_error(e) and attempt < max_nonce_retries:
+                        logger.warning(
+                            f"Nonce send failed ({e}); retrying with a new nonce "
+                            f"(attempt {attempt + 1}/{max_nonce_retries})"
+                        )
+                        await NonceManager.mark_transaction_failed(self.user_address)
+                        continue
+                    raise
         except KuruTransactionError as e:
             # Mark nonce as failed to force resync on next transaction
             await NonceManager.mark_transaction_failed(self.user_address)

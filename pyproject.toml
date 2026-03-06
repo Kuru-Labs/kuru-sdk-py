@@ -30,4 +30,5 @@ include = ["kuru_sdk_py*"]
 [tool.pytest.ini_options]
 markers = [
     "integration: marks tests that require external RPC and credentials",
+    "benchmark_live: marks live-chain benchmark tests",
 ]

@@ -450,6 +450,34 @@ PYTHONPATH=. uv run python examples/place_many_orders.py
 uv run pytest tests/ -v
 ```
 
+## Live Benchmarks
+
+Live-chain benchmarks are opt-in and disabled by default.
+
+Required environment variables:
+- `RUN_BENCHMARKS=1`
+- `PRIVATE_KEY`
+- `MARKET_ADDRESS`
+
+Optional benchmark tuning:
+- `BENCH_WARMUP` (default: `3`)
+- `BENCH_ITERATIONS` (default: `30`)
+- `BENCH_TIMEOUT_SEC` (default: `45`)
+- `BENCH_MARKET_QUOTE` (default: `0.01`)
+
+Run:
+
+```bash
+RUN_BENCHMARKS=1 uv run pytest tests/benchmarks/test_live_chain_benchmarks.py -m benchmark_live -vv -s
+```
+
+Tip:
+- Tests are split by phase, and `-s` shows live per-iteration progress lines.
+
+Output:
+- JSON benchmark report is written to `benchmark_results/<utc-timestamp>_live.json`
+- Includes `count`, `success_count`, `timeout_count`, `min`, `max`, `mean`, `p50`, `p95`, and `p99` for each benchmark series
+
 ## Requirements
 
 - Python >= 3.10

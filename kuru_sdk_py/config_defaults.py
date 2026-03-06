@@ -35,10 +35,10 @@ DEFAULT_MARGIN_ACCOUNT_IMPLEMENTATION = "0x57cF97FE1FAC7D78B07e7e0761410cb2e91F0
 # own RPC endpoints for production use to avoid rate limiting and ensure
 # better reliability.
 
-DEFAULT_RPC_URL = "https://rpc.monad.xyz"
+DEFAULT_RPC_URL = "https://rpc.fullnode.kuru.io"
 """Default HTTP RPC endpoint for blockchain interactions"""
 
-DEFAULT_RPC_WS_URL = "wss://rpc.monad.xyz"
+DEFAULT_RPC_WS_URL = "wss://rpc.fullnode.kuru.io"
 """Default WebSocket RPC endpoint for real-time blockchain events"""
 
 DEFAULT_KURU_WS_URL = "wss://ws.kuru.io/"
@@ -88,6 +88,23 @@ Increase if you see:
 Decrease if:
 - Using a premium RPC provider with instant sync
 - Every millisecond matters for your strategy
+"""
+
+DEFAULT_CHAIN_ID = 143
+"""
+Default chain ID for Kuru network.
+
+This value is included explicitly in signed transactions to avoid per-transaction
+RPC chain ID lookups and to ensure consistent signing configuration.
+"""
+
+DEFAULT_GAS_PRICE_REFRESH_INTERVAL = 1.0
+"""
+Seconds between background gas price refreshes.
+
+A lightweight background worker polls gas price at this interval and submit
+paths use the cached value instead of fetching gas price synchronously for each
+transaction.
 """
 
 DEFAULT_GAS_ADJUSTMENT_PER_SLOT = 6500
@@ -514,6 +531,9 @@ ENV_EXCHANGE_WS_URL = "EXCHANGE_WS_URL"
 ENV_MARKET_ADDRESS = "MARKET_ADDRESS"
 """Environment variable for market contract address"""
 
+ENV_MARKET_ADDRESSES = "MARKET_ADDRESSES"
+"""Environment variable for comma-separated market contract addresses"""
+
 ENV_MM_ENTRYPOINT_ADDRESS = "MM_ENTRYPOINT_ADDRESS"
 """Environment variable for MM Entrypoint contract address"""
 
@@ -535,6 +555,12 @@ ENV_GAS_BUFFER_MULTIPLIER = "KURU_GAS_BUFFER_MULTIPLIER"
 
 ENV_GAS_BUFFER = "KURU_GAS_BUFFER"
 """Environment variable for fixed gas buffer added after access-list slot subtraction"""
+
+ENV_CHAIN_ID = "KURU_CHAIN_ID"
+"""Environment variable for chain ID used in signed transactions"""
+
+ENV_GAS_PRICE_REFRESH_INTERVAL = "KURU_GAS_PRICE_REFRESH_INTERVAL"
+"""Environment variable for gas price background refresh interval (seconds)"""
 
 # WebSocket configuration
 ENV_MAX_RECONNECT_ATTEMPTS = "KURU_MAX_RECONNECT_ATTEMPTS"

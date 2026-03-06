@@ -18,6 +18,8 @@ from kuru_sdk_py.config_defaults import (
     DEFAULT_EXCHANGE_WS_URL,
     DEFAULT_TRANSACTION_TIMEOUT,
     DEFAULT_POLL_LATENCY,
+    DEFAULT_CHAIN_ID,
+    DEFAULT_GAS_PRICE_REFRESH_INTERVAL,
     DEFAULT_GAS_ADJUSTMENT_PER_SLOT,
     DEFAULT_GAS_BUFFER_MULTIPLIER,
     DEFAULT_GAS_BUFFER,
@@ -40,6 +42,7 @@ from kuru_sdk_py.config_defaults import (
     DEFAULT_CACHE_CHECK_INTERVAL,
     DEFAULT_RECONCILIATION_INTERVAL,
     DEFAULT_RECONCILIATION_THRESHOLD,
+    ENV_MARKET_ADDRESSES,
 )
 
 # ============================================================================
@@ -107,12 +110,16 @@ class TransactionConfig:
     Attributes:
         timeout: Seconds to wait for transaction confirmation
         poll_latency: Seconds to wait after confirmation for RPC sync
+        chain_id: Chain ID included in signed transactions
+        gas_price_refresh_interval: Seconds between background gas price refreshes
         gas_adjustment_per_slot: Gas to subtract per access list storage slot
         gas_buffer_multiplier: Safety buffer multiplier for gas estimates (e.g., 1.1 = 10% extra)
         gas_buffer: Fixed gas buffer added after access-list slot subtraction to prevent negative gas
     """
     timeout: int = DEFAULT_TRANSACTION_TIMEOUT
     poll_latency: float = DEFAULT_POLL_LATENCY
+    chain_id: int = DEFAULT_CHAIN_ID
+    gas_price_refresh_interval: float = DEFAULT_GAS_PRICE_REFRESH_INTERVAL
     gas_adjustment_per_slot: int = DEFAULT_GAS_ADJUSTMENT_PER_SLOT
     gas_buffer_multiplier: float = DEFAULT_GAS_BUFFER_MULTIPLIER
     gas_buffer: int = DEFAULT_GAS_BUFFER
@@ -209,6 +216,8 @@ class ClientConfig:
     use_access_list: bool = DEFAULT_USE_ACCESS_LIST
     timeout: int = DEFAULT_TRANSACTION_TIMEOUT
     poll_latency: float = DEFAULT_POLL_LATENCY
+    chain_id: int = DEFAULT_CHAIN_ID
+    gas_price_refresh_interval: float = DEFAULT_GAS_PRICE_REFRESH_INTERVAL
     max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS
     reconnect_delay: float = DEFAULT_RECONNECT_DELAY
     heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL
@@ -243,6 +252,8 @@ class ClientConfig:
         transaction_config = TransactionConfig(
             timeout=self.timeout,
             poll_latency=self.poll_latency,
+            chain_id=self.chain_id,
+            gas_price_refresh_interval=self.gas_price_refresh_interval,
         )
         websocket_config = WebSocketConfig(
             max_reconnect_attempts=self.max_reconnect_attempts,
@@ -291,6 +302,8 @@ class ClientConfig:
             ENV_EXCHANGE_WS_URL,
             ENV_TRANSACTION_TIMEOUT,
             ENV_USE_ACCESS_LIST,
+            ENV_CHAIN_ID,
+            ENV_GAS_PRICE_REFRESH_INTERVAL,
         )
         from kuru_sdk_py.utils.validation import validate_boolean_env
 
@@ -331,6 +344,195 @@ class ClientConfig:
             use_access_list=use_access_list,
             timeout=int(os.getenv(ENV_TRANSACTION_TIMEOUT, DEFAULT_TRANSACTION_TIMEOUT)),
             poll_latency=float(os.getenv(ENV_POLL_LATENCY, DEFAULT_POLL_LATENCY)),
+            chain_id=int(os.getenv(ENV_CHAIN_ID, DEFAULT_CHAIN_ID)),
+            gas_price_refresh_interval=float(
+                os.getenv(
+                    ENV_GAS_PRICE_REFRESH_INTERVAL,
+                    DEFAULT_GAS_PRICE_REFRESH_INTERVAL,
+                )
+            ),
+            max_reconnect_attempts=int(
+                os.getenv(ENV_MAX_RECONNECT_ATTEMPTS, DEFAULT_MAX_RECONNECT_ATTEMPTS)
+            ),
+            reconnect_delay=float(os.getenv(ENV_RECONNECT_DELAY, DEFAULT_RECONNECT_DELAY)),
+            heartbeat_interval=float(
+                os.getenv(ENV_HEARTBEAT_INTERVAL, DEFAULT_HEARTBEAT_INTERVAL)
+            ),
+            heartbeat_timeout=float(
+                os.getenv(ENV_HEARTBEAT_TIMEOUT, DEFAULT_HEARTBEAT_TIMEOUT)
+            ),
+            exchange_market_depth=os.getenv(
+                ENV_EXCHANGE_MARKET_DEPTH, DEFAULT_EXCHANGE_MARKET_DEPTH
+            ),
+        )
+
+
+@dataclass
+class MarketRegistration:
+    """Registration entry for a market in multi-market configurations."""
+
+    market_address: str
+    market_config: Optional["MarketConfig"] = None
+
+
+@dataclass
+class MultiClientConfig:
+    """Convenience bundle for constructing a MultiMarketClient."""
+
+    market_addresses: list[str]
+    private_key: str
+    rpc_url: str = DEFAULT_RPC_URL
+    rpc_ws_url: str = DEFAULT_RPC_WS_URL
+    kuru_ws_url: str = DEFAULT_KURU_WS_URL
+    kuru_api_url: str = DEFAULT_KURU_API_URL
+    exchange_ws_url: str = DEFAULT_EXCHANGE_WS_URL
+    post_only: bool = DEFAULT_POST_ONLY
+    auto_approve: bool = DEFAULT_AUTO_APPROVE
+    use_access_list: bool = DEFAULT_USE_ACCESS_LIST
+    timeout: int = DEFAULT_TRANSACTION_TIMEOUT
+    poll_latency: float = DEFAULT_POLL_LATENCY
+    chain_id: int = DEFAULT_CHAIN_ID
+    gas_price_refresh_interval: float = DEFAULT_GAS_PRICE_REFRESH_INTERVAL
+    max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS
+    reconnect_delay: float = DEFAULT_RECONNECT_DELAY
+    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL
+    heartbeat_timeout: float = DEFAULT_HEARTBEAT_TIMEOUT
+    exchange_market_depth: str = DEFAULT_EXCHANGE_MARKET_DEPTH
+    fetch_market_from_chain: bool = True
+
+    def to_configs(
+        self,
+    ) -> tuple[
+        list["MarketConfig"],
+        ConnectionConfig,
+        WalletConfig,
+        TransactionConfig,
+        WebSocketConfig,
+        OrderExecutionConfig,
+    ]:
+        connection_config = ConnectionConfig(
+            rpc_url=self.rpc_url,
+            rpc_ws_url=self.rpc_ws_url,
+            kuru_ws_url=self.kuru_ws_url,
+            kuru_api_url=self.kuru_api_url,
+            exchange_ws_url=self.exchange_ws_url,
+        )
+        wallet_config = WalletConfig(private_key=self.private_key)
+        market_configs = ConfigManager.load_market_configs(
+            market_addresses=self.market_addresses,
+            fetch_from_chain=self.fetch_market_from_chain,
+            rpc_url=self.rpc_url,
+            auto_env=False,
+        )
+        transaction_config = TransactionConfig(
+            timeout=self.timeout,
+            poll_latency=self.poll_latency,
+            chain_id=self.chain_id,
+            gas_price_refresh_interval=self.gas_price_refresh_interval,
+        )
+        websocket_config = WebSocketConfig(
+            max_reconnect_attempts=self.max_reconnect_attempts,
+            reconnect_delay=self.reconnect_delay,
+            heartbeat_interval=self.heartbeat_interval,
+            heartbeat_timeout=self.heartbeat_timeout,
+            exchange_market_depth=self.exchange_market_depth,
+        )
+        order_execution_config = OrderExecutionConfig(
+            post_only=self.post_only,
+            auto_approve=self.auto_approve,
+            use_access_list=self.use_access_list,
+        )
+        return (
+            market_configs,
+            connection_config,
+            wallet_config,
+            transaction_config,
+            websocket_config,
+            order_execution_config,
+        )
+
+    @classmethod
+    def from_env(
+        cls,
+        market_addresses: Optional[list[str]] = None,
+        private_key: Optional[str] = None,
+    ) -> "MultiClientConfig":
+        import os
+        from kuru_sdk_py.config_defaults import (
+            ENV_AUTO_APPROVE,
+            ENV_CHAIN_ID,
+            ENV_EXCHANGE_MARKET_DEPTH,
+            ENV_EXCHANGE_WS_URL,
+            ENV_GAS_PRICE_REFRESH_INTERVAL,
+            ENV_HEARTBEAT_INTERVAL,
+            ENV_HEARTBEAT_TIMEOUT,
+            ENV_KURU_API_URL,
+            ENV_KURU_WS_URL,
+            ENV_MARKET_ADDRESS,
+            ENV_MAX_RECONNECT_ATTEMPTS,
+            ENV_POLL_LATENCY,
+            ENV_POST_ONLY,
+            ENV_PRIVATE_KEY,
+            ENV_RECONNECT_DELAY,
+            ENV_RPC_URL,
+            ENV_RPC_WS_URL,
+            ENV_TRANSACTION_TIMEOUT,
+            ENV_USE_ACCESS_LIST,
+        )
+        from kuru_sdk_py.utils.validation import validate_boolean_env
+
+        if market_addresses is None:
+            env_market_addresses = os.getenv(ENV_MARKET_ADDRESSES)
+            if env_market_addresses:
+                market_addresses = [
+                    item.strip() for item in env_market_addresses.split(",") if item.strip()
+                ]
+            elif os.getenv(ENV_MARKET_ADDRESS):
+                market_addresses = [os.getenv(ENV_MARKET_ADDRESS, "").strip()]
+
+        private_key = private_key or os.getenv(ENV_PRIVATE_KEY)
+
+        if not market_addresses:
+            raise KuruConfigError(
+                f"market_addresses is required. Provide argument or set {ENV_MARKET_ADDRESSES}."
+            )
+        if not private_key:
+            raise KuruConfigError(
+                f"private_key is required. Provide argument or set {ENV_PRIVATE_KEY}."
+            )
+
+        post_only = DEFAULT_POST_ONLY
+        if (env_post_only := os.getenv(ENV_POST_ONLY)) is not None:
+            post_only = validate_boolean_env(env_post_only, "post_only")
+
+        auto_approve = DEFAULT_AUTO_APPROVE
+        if (env_auto_approve := os.getenv(ENV_AUTO_APPROVE)) is not None:
+            auto_approve = validate_boolean_env(env_auto_approve, "auto_approve")
+
+        use_access_list = DEFAULT_USE_ACCESS_LIST
+        if (env_use_access_list := os.getenv(ENV_USE_ACCESS_LIST)) is not None:
+            use_access_list = validate_boolean_env(env_use_access_list, "use_access_list")
+
+        return cls(
+            market_addresses=market_addresses,
+            private_key=private_key,
+            rpc_url=os.getenv(ENV_RPC_URL, DEFAULT_RPC_URL),
+            rpc_ws_url=os.getenv(ENV_RPC_WS_URL, DEFAULT_RPC_WS_URL),
+            kuru_ws_url=os.getenv(ENV_KURU_WS_URL, DEFAULT_KURU_WS_URL),
+            kuru_api_url=os.getenv(ENV_KURU_API_URL, DEFAULT_KURU_API_URL),
+            exchange_ws_url=os.getenv(ENV_EXCHANGE_WS_URL, DEFAULT_EXCHANGE_WS_URL),
+            post_only=post_only,
+            auto_approve=auto_approve,
+            use_access_list=use_access_list,
+            timeout=int(os.getenv(ENV_TRANSACTION_TIMEOUT, DEFAULT_TRANSACTION_TIMEOUT)),
+            poll_latency=float(os.getenv(ENV_POLL_LATENCY, DEFAULT_POLL_LATENCY)),
+            chain_id=int(os.getenv(ENV_CHAIN_ID, DEFAULT_CHAIN_ID)),
+            gas_price_refresh_interval=float(
+                os.getenv(
+                    ENV_GAS_PRICE_REFRESH_INTERVAL,
+                    DEFAULT_GAS_PRICE_REFRESH_INTERVAL,
+                )
+            ),
             max_reconnect_attempts=int(
                 os.getenv(ENV_MAX_RECONNECT_ATTEMPTS, DEFAULT_MAX_RECONNECT_ATTEMPTS)
             ),
@@ -739,9 +941,48 @@ class ConfigManager:
         return MarketConfig(**config_dict)
 
     @staticmethod
+    def load_market_configs(
+        market_addresses: Optional[list[str]] = None,
+        fetch_from_chain: bool = True,
+        rpc_url: Optional[str] = None,
+        auto_env: bool = True,
+    ) -> list[MarketConfig]:
+        """Load multiple market configs."""
+        import os
+        from kuru_sdk_py.config_defaults import ENV_MARKET_ADDRESS
+
+        resolved_addresses = market_addresses
+        if auto_env and not resolved_addresses:
+            env_market_addresses = os.getenv(ENV_MARKET_ADDRESSES)
+            if env_market_addresses:
+                resolved_addresses = [
+                    item.strip() for item in env_market_addresses.split(",") if item.strip()
+                ]
+            elif os.getenv(ENV_MARKET_ADDRESS):
+                resolved_addresses = [os.getenv(ENV_MARKET_ADDRESS, "").strip()]
+
+        if not resolved_addresses:
+            raise KuruConfigError(
+                "market_addresses is required. Provide it as argument or set "
+                f"{ENV_MARKET_ADDRESSES} or {ENV_MARKET_ADDRESS}."
+            )
+
+        return [
+            ConfigManager.load_market_config(
+                market_address=market_address,
+                fetch_from_chain=fetch_from_chain,
+                rpc_url=rpc_url,
+                auto_env=False,
+            )
+            for market_address in resolved_addresses
+        ]
+
+    @staticmethod
     def load_transaction_config(
         timeout: Optional[int] = None,
         poll_latency: Optional[float] = None,
+        chain_id: Optional[int] = None,
+        gas_price_refresh_interval: Optional[float] = None,
         gas_adjustment_per_slot: Optional[int] = None,
         gas_buffer_multiplier: Optional[float] = None,
         gas_buffer: Optional[int] = None,
@@ -755,6 +996,8 @@ class ConfigManager:
         Args:
             timeout: Seconds to wait for transaction confirmation
             poll_latency: Seconds to wait after confirmation for RPC sync
+            chain_id: Chain ID included in signed transactions
+            gas_price_refresh_interval: Seconds between background gas price refreshes
             gas_adjustment_per_slot: Gas to subtract per access list slot
             gas_buffer_multiplier: Safety buffer multiplier for gas estimates
             gas_buffer: Fixed gas buffer added after access-list slot subtraction
@@ -773,6 +1016,7 @@ class ConfigManager:
         import os
         from kuru_sdk_py.config_defaults import (
             ENV_TRANSACTION_TIMEOUT, ENV_POLL_LATENCY,
+            ENV_CHAIN_ID, ENV_GAS_PRICE_REFRESH_INTERVAL,
             ENV_GAS_ADJUSTMENT_PER_SLOT, ENV_GAS_BUFFER_MULTIPLIER,
             ENV_GAS_BUFFER,
         )
@@ -785,6 +1029,10 @@ class ConfigManager:
                 config_dict["timeout"] = int(env_timeout)
             if env_latency := os.getenv(ENV_POLL_LATENCY):
                 config_dict["poll_latency"] = float(env_latency)
+            if env_chain_id := os.getenv(ENV_CHAIN_ID):
+                config_dict["chain_id"] = int(env_chain_id)
+            if env_gas_refresh := os.getenv(ENV_GAS_PRICE_REFRESH_INTERVAL):
+                config_dict["gas_price_refresh_interval"] = float(env_gas_refresh)
             if env_gas_adj := os.getenv(ENV_GAS_ADJUSTMENT_PER_SLOT):
                 config_dict["gas_adjustment_per_slot"] = int(env_gas_adj)
             if env_gas_buf := os.getenv(ENV_GAS_BUFFER_MULTIPLIER):
@@ -797,6 +1045,10 @@ class ConfigManager:
             config_dict["timeout"] = timeout
         if poll_latency is not None:
             config_dict["poll_latency"] = poll_latency
+        if chain_id is not None:
+            config_dict["chain_id"] = chain_id
+        if gas_price_refresh_interval is not None:
+            config_dict["gas_price_refresh_interval"] = gas_price_refresh_interval
         if gas_adjustment_per_slot is not None:
             config_dict["gas_adjustment_per_slot"] = gas_adjustment_per_slot
         if gas_buffer_multiplier is not None:
@@ -1091,6 +1343,28 @@ class ConfigManager:
             "websocket_config": ConfigManager.load_websocket_config(auto_env=auto_env),
             "order_execution_config": ConfigManager.load_order_execution_config(auto_env=auto_env),
             "cache_config": ConfigManager.load_cache_config(auto_env=False),  # Advanced only
+        }
+
+    @staticmethod
+    def load_multi_market_configs(
+        market_addresses: Optional[list[str]] = None,
+        fetch_from_chain: bool = True,
+        auto_env: bool = True,
+        **overrides
+    ) -> dict:
+        """Load all configs at once for MultiMarketClient.create()."""
+        return {
+            "wallet_config": ConfigManager.load_wallet_config(auto_env=auto_env),
+            "connection_config": ConfigManager.load_connection_config(auto_env=auto_env),
+            "markets": ConfigManager.load_market_configs(
+                market_addresses=market_addresses,
+                fetch_from_chain=fetch_from_chain,
+                auto_env=auto_env,
+            ),
+            "transaction_config": ConfigManager.load_transaction_config(auto_env=auto_env),
+            "websocket_config": ConfigManager.load_websocket_config(auto_env=auto_env),
+            "order_execution_config": ConfigManager.load_order_execution_config(auto_env=auto_env),
+            "cache_config": ConfigManager.load_cache_config(auto_env=False),
         }
 
 

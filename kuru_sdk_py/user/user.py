@@ -14,13 +14,18 @@ from kuru_sdk_py.configs import (
     TransactionConfig,
     OrderExecutionConfig,
 )
+from kuru_sdk_py.account_session import AccountSession
 from kuru_sdk_py.utils import (
     load_abi,
     ZERO_ADDRESS,
     is_native_token,
 )
 from kuru_sdk_py.transaction.transaction import AsyncTransactionSenderMixin
+from kuru_sdk_py.transaction.nonce_manager import NonceManager
 from kuru_sdk_py.exceptions import KuruAuthorizationError, KuruInsufficientFundsError
+
+EIP_7702_DELEGATION_PREFIX = b"\xef\x01\x00"
+EIP_7702_DELEGATION_CODE_LENGTH = 23
 
 
 class User(AsyncTransactionSenderMixin):
@@ -43,6 +48,7 @@ class User(AsyncTransactionSenderMixin):
         wallet_config: WalletConfig,
         transaction_config: TransactionConfig,
         order_execution_config: OrderExecutionConfig,
+        account_session: Optional[AccountSession] = None,
     ):
         """
         Initialize the User with margin contract, token contracts, and MM entrypoint.
@@ -60,6 +66,8 @@ class User(AsyncTransactionSenderMixin):
         self.wallet_config = wallet_config
         self.transaction_config = transaction_config
         self.order_execution_config = order_execution_config
+        self.account_session = account_session
+        self._owns_account_session = account_session is None
 
         # Extract commonly used values from configs
         # From MarketConfig
@@ -77,7 +85,6 @@ class User(AsyncTransactionSenderMixin):
 
         # From WalletConfig
         self.user_address = Web3.to_checksum_address(wallet_config.user_address)
-        private_key = wallet_config.private_key
 
         # Normalize all addresses
         self.margin_contract_address = Web3.to_checksum_address(margin_contract_address)
@@ -85,11 +92,16 @@ class User(AsyncTransactionSenderMixin):
         self.quote_token_address = Web3.to_checksum_address(quote_token_address)
         self.mm_entrypoint_address = Web3.to_checksum_address(mm_entrypoint_address)
 
-        # Initialize AsyncWeb3
-        self.w3 = AsyncWeb3(AsyncHTTPProvider(self.rpc_url))
+        # Reuse shared account transport when provided.
+        if self.account_session is None:
+            self.account_session = AccountSession(
+                connection_config=connection_config,
+                wallet_config=wallet_config,
+                transaction_config=transaction_config,
+            )
 
-        # Create account from private key for signing transactions
-        self.account = self.w3.eth.account.from_key(private_key)
+        self.w3 = self.account_session.w3
+        self.account = self.account_session.account
 
         # Load ABIs
         margin_account_abi = load_abi("margin_account")
@@ -124,6 +136,29 @@ class User(AsyncTransactionSenderMixin):
             f"Margin: {self.margin_contract_address} | "
             f"MM Entrypoint: {self.mm_entrypoint_address}"
         )
+
+    async def start_gas_price_worker(self) -> None:
+        account_session = getattr(self, "account_session", None)
+        if account_session is not None:
+            await account_session.start_gas_price_worker()
+            return
+        await super().start_gas_price_worker()
+
+    async def stop_gas_price_worker(self) -> None:
+        account_session = getattr(self, "account_session", None)
+        if account_session is not None:
+            await account_session.stop_gas_price_worker()
+            return
+        await super().stop_gas_price_worker()
+
+    async def _get_effective_gas_price(
+        self,
+        override_gas_price: Optional[int] = None,
+    ) -> int:
+        account_session = getattr(self, "account_session", None)
+        if account_session is not None:
+            return await account_session._get_effective_gas_price(override_gas_price)
+        return await super()._get_effective_gas_price(override_gas_price)
 
     # Conversion helper methods
 
@@ -546,7 +581,7 @@ class User(AsyncTransactionSenderMixin):
         if is_native and value_param > 0:
             current_balance = await self.w3.eth.get_balance(self.user_address)
             estimated_gas = 100_000
-            gas_price = await self.w3.eth.gas_price
+            gas_price = await self._get_effective_gas_price()
             estimated_gas_cost = estimated_gas * gas_price
             total_required = value_param + estimated_gas_cost
 
@@ -716,6 +751,45 @@ class User(AsyncTransactionSenderMixin):
 
     # EIP-7702 Authorization
 
+    @staticmethod
+    def _extract_eip_7702_delegated_address(account_code: bytes) -> Optional[str]:
+        """
+        Extract delegated address from EIP-7702 delegation-designator code.
+
+        Delegation designator format (23 bytes total):
+        0xEF0100 + 20-byte delegate address
+        """
+        raw_code = bytes(account_code)
+        if len(raw_code) != EIP_7702_DELEGATION_CODE_LENGTH:
+            return None
+        if not raw_code.startswith(EIP_7702_DELEGATION_PREFIX):
+            return None
+        delegated_address_hex = "0x" + raw_code[len(EIP_7702_DELEGATION_PREFIX) :].hex()
+        return Web3.to_checksum_address(delegated_address_hex)
+
+    async def has_eip_7702_authorization(self, authorization_address: str) -> bool:
+        """
+        Check whether the account is currently authorized to the given address.
+
+        This checks for the EIP-7702 delegation-designator code first. As a compatibility
+        fallback, it also accepts a full code match with the target contract.
+        """
+        target_address = Web3.to_checksum_address(authorization_address)
+        user_code = await self.w3.eth.get_code(self.user_address)
+        if len(user_code) == 0:
+            return False
+
+        delegated_address = self._extract_eip_7702_delegated_address(user_code)
+        if delegated_address is not None:
+            return delegated_address == target_address
+
+        target_code = await self.w3.eth.get_code(target_address)
+        return len(target_code) > 0 and bytes(user_code) == bytes(target_code)
+
+    async def has_mm_entrypoint_authorization(self) -> bool:
+        """Check whether the account is currently authorized to the configured MM Entrypoint."""
+        return await self.has_eip_7702_authorization(self.mm_entrypoint_address)
+
     async def _send_eip_7702_transaction(
         self,
         authorization_address: str,
@@ -723,85 +797,121 @@ class User(AsyncTransactionSenderMixin):
         nonce: Optional[int] = None,
     ) -> tuple[str, dict]:
         """Shared EIP-7702 send path for authorization and revocation."""
-        chain_id = await self.w3.eth.chain_id
+        chain_id = self.transaction_config.chain_id
+        max_nonce_retries = 5
+        attempt = 0
 
-        if nonce is None:
-            nonce = await self.w3.eth.get_transaction_count(self.user_address)
-            logger.info(f"Using current nonce for {action_name}: {nonce}")
-        else:
-            logger.info(f"Using provided nonce for {action_name}: {nonce}")
+        while True:
+            attempt += 1
 
-        logger.info(f"Preparing EIP-7702 {action_name} on chain {chain_id}")
-
-        authorization = {
-            "chainId": chain_id,
-            "address": authorization_address,
-            "nonce": nonce + 1,
-        }
-
-        signed_auth = self.account.sign_authorization(authorization)
-        logger.debug(
-            f"Signed {action_name} authorization created: {type(signed_auth).__name__}"
-        )
-
-        max_priority_fee = await self.w3.eth.max_priority_fee
-        latest_block = await self.w3.eth.get_block("latest")
-        base_fee = latest_block["baseFeePerGas"]
-        max_fee = base_fee * 2 + max_priority_fee
-
-        tx = {
-            "chainId": chain_id,
-            "nonce": nonce,
-            "gas": 100_000,
-            "maxFeePerGas": max_fee,
-            "maxPriorityFeePerGas": max_priority_fee,
-            "to": self.user_address,
-            "value": 0,
-            "authorizationList": [signed_auth],
-            "data": b"",
-        }
-
-        try:
-            estimated_gas = await self.w3.eth.estimate_gas(tx)
-            tx["gas"] = int(estimated_gas)
-            logger.debug(f"Estimated gas: {estimated_gas}, using: {tx['gas']}")
-        except Exception as e:
-            logger.warning(f"Gas estimation failed, using default: {e}")
-
-        if action_name == "authorization":
-            native_balance = await self.w3.eth.get_balance(self.user_address)
-            estimated_gas_cost = tx["gas"] * tx["maxFeePerGas"]
-            total_required = tx["value"] + estimated_gas_cost
+            if nonce is None:
+                current_nonce = await NonceManager.get_and_increment_nonce(
+                    self.w3, self.user_address
+                )
+                logger.info(f"Using current nonce for {action_name}: {current_nonce}")
+            else:
+                current_nonce = nonce
+                logger.info(f"Using provided nonce for {action_name}: {current_nonce}")
 
             logger.info(
-                f"Native balance: {native_balance} wei ({native_balance / 1e18:.6f} tokens)"
-            )
-            logger.info(
-                f"Total required for EIP-7702 authorization: {total_required} wei "
-                f"({total_required / 1e18:.6f} tokens)"
+                f"Preparing EIP-7702 {action_name} on chain {chain_id} "
+                f"(attempt {attempt}/{max_nonce_retries})"
             )
 
-            if native_balance < total_required:
-                raise KuruInsufficientFundsError(
-                    f"Insufficient native token balance for EIP-7702 authorization:\n"
-                    f"  Current balance: {native_balance} wei ({native_balance / 1e18:.6f} tokens)\n"
-                    f"  Required: {total_required} wei ({total_required / 1e18:.6f} tokens)\n"
-                    f"    - Transaction value: {tx['value']} wei\n"
-                    f"    - Estimated gas cost: {estimated_gas_cost} wei ({estimated_gas_cost / 1e18:.6f} tokens)\n"
-                    f"  Shortfall: {total_required - native_balance} wei ({(total_required - native_balance) / 1e18:.6f} tokens)\n"
-                    f"  Please add more native tokens to your wallet."
+            authorization = {
+                "chainId": chain_id,
+                "address": authorization_address,
+                "nonce": current_nonce + 1,
+            }
+
+            signed_auth = self.account.sign_authorization(authorization)
+            logger.debug(
+                f"Signed {action_name} authorization created: {type(signed_auth).__name__}"
+            )
+
+            max_priority_fee = await self.w3.eth.max_priority_fee
+            latest_block = await self.w3.eth.get_block("latest")
+            base_fee = latest_block["baseFeePerGas"]
+            max_fee = base_fee * 2 + max_priority_fee
+
+            tx = {
+                "chainId": chain_id,
+                "nonce": current_nonce,
+                "gas": 100_000,
+                "maxFeePerGas": max_fee,
+                "maxPriorityFeePerGas": max_priority_fee,
+                "to": self.user_address,
+                "value": 0,
+                "authorizationList": [signed_auth],
+                "data": b"",
+            }
+
+            try:
+                estimated_gas = await self.w3.eth.estimate_gas(tx)
+                tx["gas"] = int(estimated_gas)
+                logger.debug(f"Estimated gas: {estimated_gas}, using: {tx['gas']}")
+            except Exception as e:
+                logger.warning(f"Gas estimation failed, using default: {e}")
+
+            if action_name == "authorization":
+                native_balance = await self.w3.eth.get_balance(self.user_address)
+                estimated_gas_cost = tx["gas"] * tx["maxFeePerGas"]
+                total_required = tx["value"] + estimated_gas_cost
+
+                logger.info(
+                    f"Native balance: {native_balance} wei ({native_balance / 1e18:.6f} tokens)"
+                )
+                logger.info(
+                    f"Total required for EIP-7702 authorization: {total_required} wei "
+                    f"({total_required / 1e18:.6f} tokens)"
                 )
 
-        signed_tx = self.account.sign_transaction(tx)
-        tx_hash = await self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-        tx_hash_hex = tx_hash.hex()
-        logger.info(f"EIP-7702 {action_name} transaction sent: {tx_hash_hex}")
+                if native_balance < total_required:
+                    raise KuruInsufficientFundsError(
+                        f"Insufficient native token balance for EIP-7702 authorization:\n"
+                        f"  Current balance: {native_balance} wei ({native_balance / 1e18:.6f} tokens)\n"
+                        f"  Required: {total_required} wei ({total_required / 1e18:.6f} tokens)\n"
+                        f"    - Transaction value: {tx['value']} wei\n"
+                        f"    - Estimated gas cost: {estimated_gas_cost} wei ({estimated_gas_cost / 1e18:.6f} tokens)\n"
+                        f"  Shortfall: {total_required - native_balance} wei ({(total_required - native_balance) / 1e18:.6f} tokens)\n"
+                        f"  Please add more native tokens to your wallet."
+                    )
 
-        tx_receipt = await self._wait_for_transaction_receipt(tx_hash_hex)
-        logger.info(
-            f"EIP-7702 {action_name} confirmed in block {tx_receipt['blockNumber']}"
-        )
-        return tx_hash_hex, tx_receipt
+            try:
+                signed_tx = self.account.sign_transaction(tx)
+                logger.info(
+                    f"Sending EIP-7702 {action_name} with nonce={tx.get('nonce')} "
+                    f"from={self.user_address} to={tx.get('to')} gas={tx.get('gas')} "
+                    f"maxFeePerGas={tx.get('maxFeePerGas')} "
+                    f"maxPriorityFeePerGas={tx.get('maxPriorityFeePerGas')}"
+                )
+                tx_hash = await self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                tx_hash_hex = tx_hash.hex()
+                logger.info(
+                    f"EIP-7702 {action_name} transaction sent: {tx_hash_hex} "
+                    f"(nonce={tx.get('nonce')})"
+                )
+
+                tx_receipt = await self._wait_for_transaction_receipt(tx_hash_hex)
+                logger.info(
+                    f"EIP-7702 {action_name} confirmed in block {tx_receipt['blockNumber']}"
+                )
+                return tx_hash_hex, tx_receipt
+            except Exception as e:
+                if (
+                    nonce is None
+                    and self._is_nonce_too_low_error(e)
+                    and attempt < max_nonce_retries
+                ):
+                    logger.warning(
+                        f"EIP-7702 {action_name} send failed ({e}); retrying with a new nonce "
+                        f"(attempt {attempt + 1}/{max_nonce_retries})"
+                    )
+                    await NonceManager.mark_transaction_failed(self.user_address)
+                    continue
+
+                await NonceManager.mark_transaction_failed(self.user_address)
+                raise
 
     async def eip_7702_auth(self, nonce: Optional[int] = None) -> str:
         """
@@ -879,8 +989,55 @@ class User(AsyncTransactionSenderMixin):
 
     async def close(self) -> None:
         """Close the HTTP provider session."""
+        account_session = getattr(self, "account_session", None)
+        owns_account_session = getattr(self, "_owns_account_session", False)
+        if owns_account_session and account_session is not None:
+            await account_session.close()
+
+
+class AccountClient(User):
+    """Account-scoped client with generic token and market helpers."""
+
+    async def get_margin_balance(self, token_address: str) -> int:
+        normalized = Web3.to_checksum_address(token_address)
+        return await self.margin_contract.functions.getBalance(
+            self.user_address, normalized
+        ).call()
+
+    async def get_margin_balances(
+        self, token_addresses: Optional[list[str]] = None
+    ) -> dict[str, int] | tuple[int, int]:
+        if token_addresses is None:
+            return await super().get_margin_balances()
+
+        balances: dict[str, int] = {}
+        for token_address in token_addresses:
+            normalized = Web3.to_checksum_address(token_address)
+            balances[normalized] = await self.get_margin_balance(normalized)
+        return balances
+
+    async def get_token_balance(self, token_address: str) -> int:
+        normalized = Web3.to_checksum_address(token_address)
+        if is_native_token(normalized):
+            return await self.w3.eth.get_balance(self.user_address)
+
+        erc20_abi = load_abi("erc20")
+        token_contract = self.w3.eth.contract(address=normalized, abi=erc20_abi)
+        return await token_contract.functions.balanceOf(self.user_address).call()
+
+    def get_active_orders(self, market_address: Optional[str] = None) -> list[dict]:
+        original_market_address = getattr(self, "market_address", None)
+        if market_address is None:
+            return super().get_active_orders()
+
         try:
-            if hasattr(self.w3.provider, "_session") and self.w3.provider._session:
-                await self.w3.provider._session.close()
-        except Exception:
-            pass
+            self.market_address = Web3.to_checksum_address(market_address)
+            return super().get_active_orders()
+        finally:
+            self.market_address = original_market_address
+
+
+class MarketAccountView(User):
+    """Named compatibility alias for the single-market account view."""
+
+    pass

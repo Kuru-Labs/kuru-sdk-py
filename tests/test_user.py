@@ -23,6 +23,7 @@ class _AwaitableValue:
 def _make_user(base_native: bool = False) -> User:
     user = User.__new__(User)
     user.user_address = "0x0000000000000000000000000000000000000001"
+    user.mm_entrypoint_address = "0x0000000000000000000000000000000000000005"
     user.margin_contract_address = "0x0000000000000000000000000000000000000002"
     user.base_token_address = (
         ZERO_ADDRESS if base_native else "0x0000000000000000000000000000000000000003"
@@ -35,6 +36,7 @@ def _make_user(base_native: bool = False) -> User:
         eth=SimpleNamespace(
             get_balance=AsyncMock(return_value=10**20),
             gas_price=_AwaitableValue(10**9),
+            get_code=AsyncMock(return_value=b""),
         )
     )
     user.margin_contract = MagicMock()
@@ -116,3 +118,49 @@ async def test_deposit_base_native_fails_preflight_on_low_balance():
 
     with pytest.raises(KuruInsufficientFundsError, match="Insufficient native token"):
         await user.deposit_base(Decimal("1"), auto_approve=True)
+
+
+@pytest.mark.asyncio
+async def test_has_eip_7702_authorization_true_for_matching_delegation():
+    user = _make_user()
+    delegated_target = "0x0000000000000000000000000000000000000005"
+    user.w3.eth.get_code = AsyncMock(
+        side_effect=[bytes.fromhex("ef0100" + delegated_target[2:])]
+    )
+
+    assert await user.has_eip_7702_authorization(delegated_target) is True
+
+
+@pytest.mark.asyncio
+async def test_has_eip_7702_authorization_false_for_different_delegation():
+    user = _make_user()
+    delegated_target = "0x0000000000000000000000000000000000000006"
+    check_target = "0x0000000000000000000000000000000000000005"
+    user.w3.eth.get_code = AsyncMock(
+        side_effect=[bytes.fromhex("ef0100" + delegated_target[2:])]
+    )
+
+    assert await user.has_eip_7702_authorization(check_target) is False
+
+
+@pytest.mark.asyncio
+async def test_has_eip_7702_authorization_fallback_to_full_code_match():
+    user = _make_user()
+    full_code = bytes.fromhex("6080604052")
+    user.w3.eth.get_code = AsyncMock(side_effect=[full_code, full_code])
+
+    assert (
+        await user.has_eip_7702_authorization(
+            "0x0000000000000000000000000000000000000005"
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_has_mm_entrypoint_authorization_uses_configured_address():
+    user = _make_user()
+    user.has_eip_7702_authorization = AsyncMock(return_value=True)
+
+    assert await user.has_mm_entrypoint_authorization() is True
+    user.has_eip_7702_authorization.assert_awaited_once_with(user.mm_entrypoint_address)

@@ -30,7 +30,7 @@ class TestNonceManager:
         assert nonce == 10
 
         # Assert RPC was called once with correct parameters
-        mock_w3.eth.get_transaction_count.assert_called_once_with(address, 'latest')
+        mock_w3.eth.get_transaction_count.assert_called_once_with(address, 'pending')
 
         # Assert internal state is incremented
         nonce_state = NonceManager._nonce_states[address]
@@ -97,8 +97,8 @@ class TestNonceManager:
         assert nonce_state.current_nonce == 15
 
     @pytest.mark.asyncio
-    async def test_failure_resets_nonce(self):
-        """Test that mark_transaction_failed resets nonce state."""
+    async def test_failure_marks_for_resync_and_keeps_monotonic_nonce(self):
+        """Test that mark_transaction_failed triggers resync without lowering nonce."""
         # Create mock Web3 instance
         mock_w3 = MagicMock()
         # First call returns 10, second call (after reset) returns 15
@@ -118,11 +118,12 @@ class TestNonceManager:
         # Mark transaction as failed
         await NonceManager.mark_transaction_failed(address)
 
-        # Verify state is reset
-        assert nonce_state.initialized is False
-        assert nonce_state.current_nonce is None
+        # Verify state is marked for resync and local nonce is preserved
+        assert nonce_state.initialized is True
+        assert nonce_state.current_nonce == 11
+        assert nonce_state.needs_rpc_resync is True
 
-        # Get nonce again - should fetch from RPC again
+        # Get nonce again - should fetch from RPC and select max(local, rpc)
         nonce2 = await NonceManager.get_and_increment_nonce(mock_w3, address)
         assert nonce2 == 15
 
@@ -132,6 +133,7 @@ class TestNonceManager:
         # Verify state is reinitialized
         assert nonce_state.initialized is True
         assert nonce_state.current_nonce == 16
+        assert nonce_state.needs_rpc_resync is False
 
     @pytest.mark.asyncio
     async def test_multiple_addresses_independent(self):
@@ -189,7 +191,29 @@ class TestNonceManager:
 
         assert state.current_nonce is None
         assert state.initialized is False
+        assert state.needs_rpc_resync is False
         assert isinstance(state.lock, asyncio.Lock)
+
+    @pytest.mark.asyncio
+    async def test_resync_does_not_decrease_nonce_when_rpc_is_stale(self):
+        """Test monotonic nonce when RPC pending nonce is behind local state."""
+        mock_w3 = MagicMock()
+        # First call initializes at 10; second resync call returns stale 8
+        mock_w3.eth.get_transaction_count = AsyncMock(side_effect=[10, 8])
+        address = "0x1234567890123456789012345678901234567890"
+
+        nonce1 = await NonceManager.get_and_increment_nonce(mock_w3, address)
+        assert nonce1 == 10
+
+        await NonceManager.mark_transaction_failed(address)
+        nonce2 = await NonceManager.get_and_increment_nonce(mock_w3, address)
+
+        # Should continue from local 11, not stale RPC 8
+        assert nonce2 == 11
+
+        nonce_state = NonceManager._nonce_states[address]
+        assert nonce_state.current_nonce == 12
+        assert nonce_state.needs_rpc_resync is False
 
     @pytest.mark.asyncio
     async def test_high_concurrency(self):

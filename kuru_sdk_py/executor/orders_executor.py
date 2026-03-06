@@ -14,6 +14,7 @@ from kuru_sdk_py.configs import (
     TransactionConfig,
     OrderExecutionConfig,
 )
+from kuru_sdk_py.account_session import AccountSession
 from kuru_sdk_py.manager.order import Order, OrderType, OrderSide
 from kuru_sdk_py.manager.orders_manager import OrdersManager
 from kuru_sdk_py.utils import load_abi
@@ -141,6 +142,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         wallet_config: WalletConfig,
         transaction_config: TransactionConfig,
         order_execution_config: OrderExecutionConfig,
+        account_session: Optional[AccountSession] = None,
     ):
         """
         Initialize the OrdersExecutor with MM entrypoint contract.
@@ -161,6 +163,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         self.wallet_config = wallet_config
         self.transaction_config = transaction_config
         self.order_execution_config = order_execution_config
+        self.account_session = account_session
 
         # Extract commonly used values from configs
         self.mm_entrypoint_address = Web3.to_checksum_address(
@@ -169,11 +172,15 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         self.order_book_address = Web3.to_checksum_address(market_config.market_address)
         self.user_address = Web3.to_checksum_address(wallet_config.user_address)
 
-        # Initialize AsyncWeb3
-        self.w3 = AsyncWeb3(AsyncHTTPProvider(connection_config.rpc_url))
+        if self.account_session is None:
+            self.account_session = AccountSession(
+                connection_config=connection_config,
+                wallet_config=wallet_config,
+                transaction_config=transaction_config,
+            )
 
-        # Create account from private key for signing transactions
-        self.account = self.w3.eth.account.from_key(wallet_config.private_key)
+        self.w3 = self.account_session.w3
+        self.account = self.account_session.account
 
         # Load MM Entrypoint ABI and create contract instance
         # With EIP-7702, we call the user's EOA address (which has MM Entrypoint code delegated)
@@ -190,6 +197,26 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         self.contract_address = self.mm_entrypoint_address
 
         self._connected = False
+
+    async def start_gas_price_worker(self) -> None:
+        if self.account_session is not None:
+            await self.account_session.start_gas_price_worker()
+            return
+        await super().start_gas_price_worker()
+
+    async def stop_gas_price_worker(self) -> None:
+        if self.account_session is not None:
+            await self.account_session.stop_gas_price_worker()
+            return
+        await super().stop_gas_price_worker()
+
+    async def _get_effective_gas_price(
+        self,
+        override_gas_price: Optional[int] = None,
+    ) -> int:
+        if self.account_session is not None:
+            return await self.account_session._get_effective_gas_price(override_gas_price)
+        return await super()._get_effective_gas_price(override_gas_price)
 
     # _send_transaction is inherited from AsyncTransactionSenderMixin
 
@@ -541,6 +568,10 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
 
     async def close(self) -> None:
         """Close the HTTP provider session."""
+        try:
+            await self.stop_gas_price_worker()
+        except Exception:
+            pass
         try:
             if hasattr(self.w3.provider, "_session") and self.w3.provider._session:
                 await self.w3.provider._session.close()

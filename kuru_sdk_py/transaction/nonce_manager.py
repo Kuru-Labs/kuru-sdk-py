@@ -19,6 +19,7 @@ class NonceState:
 
     current_nonce: Optional[int] = None
     initialized: bool = False
+    needs_rpc_resync: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -78,19 +79,42 @@ class NonceManager:
 
         # Acquire per-address lock for thread-safe nonce allocation
         async with nonce_state.lock:
-            # Initialize from RPC if needed
-            if not nonce_state.initialized:
-                logger.debug(f"Fetching initial nonce from RPC for {address}")
-                nonce_from_rpc = await w3.eth.get_transaction_count(address, "latest")
-                nonce_state.current_nonce = nonce_from_rpc
+            should_resync = (not nonce_state.initialized) or nonce_state.needs_rpc_resync
+            if should_resync:
+                reason = "initialization" if not nonce_state.initialized else "failure recovery"
+                logger.debug(f"Fetching nonce from RPC for {address} ({reason})")
+                nonce_from_rpc = await w3.eth.get_transaction_count(address, "pending")
+
+                # Keep local nonce monotonic. This prevents regressions when RPC pending
+                # state is stale or inconsistent across load-balanced backends.
+                if nonce_state.current_nonce is None:
+                    selected_nonce = nonce_from_rpc
+                else:
+                    selected_nonce = max(nonce_state.current_nonce, nonce_from_rpc)
+                    if nonce_from_rpc < nonce_state.current_nonce:
+                        logger.warning(
+                            f"RPC pending nonce ({nonce_from_rpc}) is behind local nonce "
+                            f"({nonce_state.current_nonce}) for {address}; keeping local nonce"
+                        )
+
+                nonce_state.current_nonce = selected_nonce
                 nonce_state.initialized = True
-                logger.info(f"Initialized nonce for {address}: {nonce_from_rpc}")
+                nonce_state.needs_rpc_resync = False
+                logger.info(
+                    f"Nonce synchronized for {address}: rpc_pending={nonce_from_rpc}, "
+                    f"selected={selected_nonce}"
+                )
 
             # Get current nonce to return
             nonce_to_return = nonce_state.current_nonce
 
             # Increment for next transaction
             nonce_state.current_nonce += 1
+
+            logger.info(
+                f"Allocated nonce {nonce_to_return} for {address} "
+                f"(next local nonce: {nonce_state.current_nonce})"
+            )
 
             return nonce_to_return
 
@@ -123,10 +147,10 @@ class NonceManager:
                 return
             nonce_state = cls._nonce_states[address]
 
-        # Reset nonce state
+        # Flag resync while keeping local nonce monotonic
         async with nonce_state.lock:
-            nonce_state.initialized = False
-            nonce_state.current_nonce = None
+            nonce_state.needs_rpc_resync = True
             logger.warning(
-                f"Nonce reset for {address} due to transaction failure, will fetch from RPC on next transaction"
+                f"Nonce marked for RPC resync for {address} after transaction failure "
+                f"(local next nonce remains {nonce_state.current_nonce})"
             )

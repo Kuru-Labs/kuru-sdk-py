@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Optional
 from loguru import logger
@@ -651,3 +652,447 @@ class RpcWebsocket:
 
         else:
             logger.trace(f"Unknown MM entrypoint topic: {topic0}")
+
+
+@dataclass
+class _MarketRoute:
+    market_config: MarketConfig
+    orders_manager: OrdersManager
+    orderbook_contract: object
+
+
+class RpcEventRouter:
+    """Shared RPC websocket router for multiple markets on the same account."""
+
+    def __init__(
+        self,
+        connection_config: ConnectionConfig,
+        wallet_config: WalletConfig,
+        websocket_config: WebSocketConfig,
+        shutdown_event: Optional[asyncio.Event] = None,
+    ):
+        self.connection_config = connection_config
+        self.wallet_config = wallet_config
+        self.websocket_config = websocket_config
+
+        self.rpc_url = connection_config.rpc_ws_url
+        self.user_address = wallet_config.user_address
+        self.user_address_lower = self.user_address.lower()
+
+        self._orderbook_abi = load_abi("orderbook")
+        self._mm_entrypoint_abi = load_abi("mm_entrypoint")
+
+        self.w3 = AsyncWeb3(WebSocketProvider(self.rpc_url))
+        self.mm_entrypoint_contract = self.w3.eth.contract(
+            address=self.user_address, abi=self._mm_entrypoint_abi
+        )
+        self._http_w3 = Web3(Web3.HTTPProvider(connection_config.rpc_url))
+
+        self.subscription = None
+        self._connected = False
+        self._closing = False
+        self._shutdown_event = shutdown_event
+
+        self.events_to_topic_hashes = {}
+        self._kuru_topics: Optional[dict[str, str]] = None
+        self._subscription_type: Optional[str] = None
+
+        self._market_routes: dict[str, _MarketRoute] = {}
+
+        self._max_reconnect_attempts = websocket_config.rpc_ws_max_reconnect_attempts
+        self._reconnect_delay = websocket_config.rpc_ws_reconnect_delay
+        self._max_reconnect_delay = websocket_config.rpc_ws_max_reconnect_delay
+        self._reconnect_count = 0
+
+        self._gap_recovery_block_buffer = websocket_config.gap_recovery_block_buffer
+        self._gap_recovery_max_block_range = (
+            websocket_config.gap_recovery_max_block_range
+        )
+        self._last_seen_block: Optional[int] = None
+        self._dedup = BoundedDedupSet(max_size=10_000)
+        self._receive_timeout = (
+            websocket_config.heartbeat_interval + websocket_config.heartbeat_timeout
+        )
+
+        self._on_reconnect_callback: Optional[Callable] = None
+        self._on_disconnect_callback: Optional[Callable] = None
+
+    def register_market(
+        self,
+        market_config: MarketConfig,
+        orders_manager: OrdersManager,
+    ) -> None:
+        market_address = market_config.market_address.lower()
+        self._market_routes[market_address] = _MarketRoute(
+            market_config=market_config,
+            orders_manager=orders_manager,
+            orderbook_contract=self.w3.eth.contract(
+                address=market_config.market_address,
+                abi=self._orderbook_abi,
+            ),
+        )
+
+    def unregister_market(self, market_address: str) -> None:
+        self._market_routes.pop(Web3.to_checksum_address(market_address).lower(), None)
+
+    def has_market(self, market_address: str) -> bool:
+        return Web3.to_checksum_address(market_address).lower() in self._market_routes
+
+    def market_addresses(self) -> list[str]:
+        return [route.market_config.market_address for route in self._market_routes.values()]
+
+    def set_on_reconnect(self, callback: Optional[Callable]) -> None:
+        self._on_reconnect_callback = callback
+
+    def set_on_disconnect(self, callback: Optional[Callable]) -> None:
+        self._on_disconnect_callback = callback
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect(self) -> None:
+        await self.w3.provider.connect()
+        self._connected = True
+        self._reconnect_count = 0
+        logger.debug("RpcEventRouter connected successfully")
+
+    async def disconnect(self) -> None:
+        self._closing = True
+        self._connected = False
+
+        try:
+            await asyncio.wait_for(self.w3.provider.disconnect(), timeout=5.0)
+        except Exception:
+            pass
+
+    async def create_log_subscription(
+        self,
+        kuru_topics: dict[str, str],
+        subscription_type: Optional[str] = None,
+    ) -> None:
+        self._kuru_topics = kuru_topics
+
+        subscription_type = (
+            subscription_type or self.websocket_config.rpc_logs_subscription
+        ).strip()
+        if not subscription_type:
+            raise ValueError("subscription_type cannot be empty")
+
+        self._subscription_type = subscription_type
+        await self._subscribe(kuru_topics, subscription_type)
+
+    async def _subscribe(
+        self,
+        kuru_topics: dict[str, str],
+        subscription_type: str,
+    ) -> None:
+        topic_hashes = []
+        events_to_topic_hashes = {}
+        for name, signature in kuru_topics.items():
+            topic_hash = Web3.keccak(text=signature).hex()
+            topic_hashes.append(topic_hash)
+            events_to_topic_hashes[name] = topic_hash
+
+        self.events_to_topic_hashes = events_to_topic_hashes
+
+        params = {
+            "address": [self.user_address, *self.market_addresses()],
+            "topics": [topic_hashes],
+        }
+        try:
+            subscription = await self.w3.eth.subscribe(subscription_type, params)
+        except Exception as e:
+            msg = (
+                f"Failed to create RPC WS subscription type={subscription_type!r}. "
+                f"If you're trying to stream non-finalized Monad events, verify your RPC supports "
+                f"that subscription type (e.g. 'monadLogs'). Original error: {e}"
+            )
+            logger.error(msg)
+            raise RuntimeError(msg) from e
+
+        self.subscription = subscription
+        logger.info(
+            f"Created shared subscription type={subscription_type!r} "
+            f"for {len(self._market_routes)} market(s)"
+        )
+
+    async def process_receipt_logs(self, receipt) -> None:
+        logs = receipt.get("logs", [])
+        if not logs:
+            return
+
+        for log in logs:
+            log_dict = dict(log)
+            if hasattr(log_dict.get("topics", []), "items"):
+                log_dict["topics"] = list(log_dict["topics"])
+            await self._handle_log(log_dict)
+
+    async def _handle_log(self, log: dict) -> None:
+        if not log:
+            return
+
+        block_number = parse_hex_or_int(log.get("blockNumber"))
+        if block_number is not None:
+            if self._last_seen_block is None or block_number > self._last_seen_block:
+                self._last_seen_block = block_number
+
+        txhash_raw = log.get("transactionHash")
+        log_index_raw = log.get("logIndex")
+        if txhash_raw is not None and log_index_raw is not None:
+            dedup_key = f"{normalize_hex(txhash_raw)}:{parse_hex_or_int(log_index_raw)}"
+            if not self._dedup.check_and_add(dedup_key):
+                logger.debug(f"Skipping duplicate event: {dedup_key}")
+                return
+
+        topics = log.get("topics")
+        topic0 = normalize_hex(topics[0]) if topics and len(topics) > 0 else None
+        txhash = normalize_hex(log.get("transactionHash"))
+        log_address = log.get("address").lower() if log.get("address") else None
+
+        route = self._market_routes.get(log_address or "")
+        if route is not None:
+            await self._process_orderbook_log(route, log, topic0, txhash)
+        elif log_address == self.user_address_lower:
+            await self._batch_update_mm_log(log, topic0, txhash)
+
+    async def process_subscription_logs(self) -> None:
+        if self.subscription is None:
+            logger.error("Subscription is not created. Subscribe to the orderbook events first.")
+            return
+
+        while not self._closing:
+            if self._shutdown_event and self._shutdown_event.is_set():
+                break
+
+            try:
+                if not hasattr(self.w3, "socket") or self.w3.socket is None:
+                    if not await self._reconnect():
+                        break
+                    continue
+
+                subscription_iterator = self.w3.socket.process_subscriptions()
+
+                while self._connected and not self._closing:
+                    if self._shutdown_event and self._shutdown_event.is_set():
+                        return
+
+                    try:
+                        response = await asyncio.wait_for(
+                            subscription_iterator.__anext__(),
+                            timeout=self._receive_timeout,
+                        )
+                        result = response.get("result")
+                        if result:
+                            await self._handle_log(result)
+                    except asyncio.TimeoutError:
+                        logger.info(
+                            f"No message received in {self._receive_timeout:.0f}s - "
+                            "connection may be stale, triggering reconnection"
+                        )
+                        break
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Error processing shared subscription message: {e}")
+                        break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"Error in shared subscription loop: {e}", exc_info=True)
+
+            if not self._closing:
+                if self._on_disconnect_callback:
+                    try:
+                        self._on_disconnect_callback()
+                    except Exception as e:
+                        logger.error(f"Error in disconnect callback: {e}")
+
+                if not await self._reconnect():
+                    logger.error("Shared RPC WS reconnection permanently failed")
+                    break
+
+    async def _reconnect(self) -> bool:
+        while not self._closing:
+            if (
+                self._max_reconnect_attempts > 0
+                and self._reconnect_count >= self._max_reconnect_attempts
+            ):
+                return False
+
+            self._reconnect_count += 1
+            self._connected = False
+            delay = calculate_backoff_delay(
+                self._reconnect_count - 1,
+                self._reconnect_delay,
+                self._max_reconnect_delay,
+            )
+            await asyncio.sleep(delay)
+
+            try:
+                await asyncio.wait_for(self.w3.provider.disconnect(), timeout=5.0)
+            except Exception:
+                pass
+
+            gap_from_block = self._last_seen_block
+
+            try:
+                self.w3 = AsyncWeb3(WebSocketProvider(self.rpc_url))
+                self.mm_entrypoint_contract = self.w3.eth.contract(
+                    address=self.user_address, abi=self._mm_entrypoint_abi
+                )
+                for route in self._market_routes.values():
+                    route.orderbook_contract = self.w3.eth.contract(
+                        address=route.market_config.market_address,
+                        abi=self._orderbook_abi,
+                    )
+
+                await self.w3.provider.connect()
+                self._connected = True
+                self._reconnect_count = 0
+
+                if self._kuru_topics and self._subscription_type:
+                    await self._subscribe(self._kuru_topics, self._subscription_type)
+
+                if gap_from_block is not None:
+                    await self._recover_missed_events(gap_from_block)
+
+                if self._on_reconnect_callback:
+                    try:
+                        self._on_reconnect_callback()
+                    except Exception as e:
+                        logger.error(f"Error in reconnect callback: {e}")
+
+                return True
+            except Exception as e:
+                logger.error(f"Shared RPC WS reconnection failed: {e}")
+
+        return False
+
+    async def _recover_missed_events(self, from_block: int) -> None:
+        try:
+            current_block = self._http_w3.eth.block_number
+        except Exception as e:
+            logger.error(f"Gap recovery: failed to get current block number: {e}")
+            return
+
+        start_block = max(0, from_block - self._gap_recovery_block_buffer)
+        end_block = current_block
+        if start_block >= end_block:
+            return
+
+        topic_hashes = list(self.events_to_topic_hashes.values())
+        chunk_start = start_block
+        while chunk_start <= end_block:
+            chunk_end = min(
+                chunk_start + self._gap_recovery_max_block_range - 1, end_block
+            )
+            try:
+                logs = self._http_w3.eth.get_logs(
+                    {
+                        "fromBlock": chunk_start,
+                        "toBlock": chunk_end,
+                        "address": [self.user_address, *self.market_addresses()],
+                        "topics": [topic_hashes],
+                    }
+                )
+                for log in logs:
+                    await self._handle_log(dict(log))
+            except Exception as e:
+                logger.error(
+                    f"Gap recovery: error fetching logs for blocks {chunk_start}-{chunk_end}: {e}"
+                )
+            chunk_start = chunk_end + 1
+
+    async def _process_orderbook_log(
+        self,
+        route: _MarketRoute,
+        log,
+        topic0: str,
+        txhash: str,
+    ) -> None:
+        market_contract = route.orderbook_contract
+        orders_manager = route.orders_manager
+        size_precision = route.market_config.size_precision
+
+        if topic0 == self.events_to_topic_hashes.get("OrderCreated"):
+            decoded = market_contract.events.OrderCreated().process_log(log)
+            args = decoded["args"]
+            if args["owner"].lower() != self.user_address_lower:
+                return
+
+            event = OrderCreatedEvent(
+                order_id=args["orderId"],
+                owner=args["owner"],
+                size=Decimal(args["size"]) / Decimal(size_precision),
+                price=args["price"],
+                is_buy=args["isBuy"],
+                txhash=txhash,
+                log_index=log["logIndex"],
+            )
+            await orders_manager.on_order_created(event)
+        elif topic0 == self.events_to_topic_hashes.get("OrdersCanceled"):
+            decoded = market_contract.events.OrdersCanceled().process_log(log)
+            args = decoded["args"]
+            if args["owner"].lower() != self.user_address_lower:
+                return
+
+            event = OrdersCanceledEvent(
+                order_ids=list(args["orderId"]),
+                owner=args["owner"],
+                txhash=txhash,
+            )
+            await orders_manager.on_orders_cancelled(event)
+        elif topic0 == self.events_to_topic_hashes.get("Trade"):
+            decoded = market_contract.events.Trade().process_log(log)
+            args = decoded["args"]
+            maker = args["makerAddress"].lower()
+            taker = args["takerAddress"].lower()
+            if maker != self.user_address_lower and taker != self.user_address_lower:
+                return
+
+            event = TradeEvent(
+                order_id=args["orderId"],
+                maker_address=args["makerAddress"],
+                is_buy=args["isBuy"],
+                price=args["price"],
+                updated_size=Decimal(args["updatedSize"]) / Decimal(size_precision),
+                taker_address=args["takerAddress"],
+                tx_origin=args["txOrigin"],
+                filled_size=Decimal(args["filledSize"]) / Decimal(size_precision),
+                txhash=txhash,
+            )
+            await orders_manager.on_trade(event)
+
+    async def _batch_update_mm_log(self, log, topic0: str, txhash: str) -> None:
+        if topic0 != self.events_to_topic_hashes.get("batchUpdate"):
+            return
+
+        decoded = self.mm_entrypoint_contract.events.batchUpdate().process_log(log)
+        args = decoded["args"]
+
+        buy_cloids = [
+            bytes32_to_string(cloid) if isinstance(cloid, bytes) else cloid
+            for cloid in args["buyCloids"]
+        ]
+        sell_cloids = [
+            bytes32_to_string(cloid) if isinstance(cloid, bytes) else cloid
+            for cloid in args["sellCloids"]
+        ]
+        cancel_cloids = [
+            bytes32_to_string(cloid) if isinstance(cloid, bytes) else cloid
+            for cloid in args["cancelCloids"]
+        ]
+
+        event = BatchUpdateMMEvent(
+            buy_cloids=buy_cloids,
+            sell_cloids=sell_cloids,
+            cancel_cloids=cancel_cloids,
+            txhash=txhash,
+        )
+
+        for route in self._market_routes.values():
+            if txhash in route.orders_manager.txhash_to_sent_orders:
+                await route.orders_manager.on_batch_update_mm(event)

@@ -172,6 +172,26 @@ class OrdersManager:
                     f"Transaction {txhash} confirmed but no receipt processor set, "
                     "cannot recover missed events"
                 )
+
+            # After receipt processing, any orders still in ORDER_SENT for this txhash
+            # have no events in the receipt (partial batch failure / silent drop).
+            # Mark them as ORDER_FAILED.
+            sent = self.txhash_to_sent_orders.get(txhash)
+            if sent is not None:
+                stuck_orders = [
+                    self.cloid_to_order[order.cloid]
+                    for order in (sent.buy_orders + sent.sell_orders + sent.cancel_orders)
+                    if order.cloid in self.cloid_to_order
+                    and self.cloid_to_order[order.cloid].status == OrderStatus.ORDER_SENT
+                ]
+                if stuck_orders:
+                    logger.warning(
+                        f"Transaction {txhash} succeeded but {len(stuck_orders)} orders "
+                        "have no events in receipt, marking as failed"
+                    )
+                    for order in stuck_orders:
+                        order.update_status(OrderStatus.ORDER_FAILED)
+                        await self._finalize_order_update(order)
         else:
             # Transaction reverted — mark orders as failed
             decoded_error = await self._get_revert_reason(txhash, receipt)
@@ -459,6 +479,13 @@ class OrdersManager:
 
             logger.info(f"Order {order.cloid} cancelled: order_id={kuru_order_id}")
 
+            if order.sent_timestamp is not None:
+                latency = time() - order.sent_timestamp
+                logger.info(
+                    f"order_event_timing | cloid={order.cloid} kuru_order_id={kuru_order_id} "
+                    f"status=cancelled latency={latency*1000:.1f}ms"
+                )
+
             # Finalize update
             await self._finalize_order_update(order)
 
@@ -512,6 +539,13 @@ class OrdersManager:
                     logger.info(
                         f"Order {cloid} ({side_name}) placed: "
                         f"order_id={order_created_event.order_id}, size={order_created_event.size}"
+                    )
+
+                if order.sent_timestamp is not None:
+                    latency = time() - order.sent_timestamp
+                    logger.info(
+                        f"order_event_timing | cloid={cloid} kuru_order_id={order_created_event.order_id} "
+                        f"status={order.status.value} latency={latency*1000:.1f}ms"
                     )
 
             # Case 2: No OrderCreatedEvent (immediately fully filled)
