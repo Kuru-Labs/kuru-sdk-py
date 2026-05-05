@@ -542,9 +542,9 @@ class OrdersManager:
             f"{len(sell_cloids)} sells, {len(cancel_cloids)} cancels, txhash={txhash[:10]}..."
         )
 
-        # Validate txhash exists
+        # Ignore logs for transactions that were not submitted by this manager.
         if self.txhash_to_sent_orders.get(txhash) is None:
-            logger.error(f"Txhash {txhash} not found in txhash_to_sent_orders")
+            logger.debug(f"Ignoring BatchUpdateMM for untracked txhash {txhash[:10]}...")
             return
 
         # Get OrderCreatedEvent objects for this txhash

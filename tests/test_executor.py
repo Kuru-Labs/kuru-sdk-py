@@ -85,6 +85,7 @@ async def test_place_order_converts_decimal_and_rounds_prices(monkeypatch):
         access_list=[],
         gas_price=None,
         local_gas_counts=LocalGasCounts(n_buy=1, n_sell=1, n_cancel=0),
+        before_send=None,
     )
 
 

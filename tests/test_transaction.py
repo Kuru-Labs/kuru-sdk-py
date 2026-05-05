@@ -24,7 +24,8 @@ def _make_sender(transaction_config: TransactionConfig):
     sender.transaction_config = transaction_config
     sender.account = MagicMock()
     sender.account.sign_transaction.return_value = SimpleNamespace(
-        raw_transaction=b"signed"
+        raw_transaction=b"signed",
+        hash=_TxHash("0xabc"),
     )
     sender.w3 = SimpleNamespace(
         eth=SimpleNamespace(
@@ -158,3 +159,44 @@ async def test_send_transaction_uses_rpc_estimation_when_counts_are_missing(monk
     sender.w3.eth.estimate_gas.assert_awaited_once()
     signed_tx = sender.account.sign_transaction.call_args.args[0]
     assert signed_tx["gas"] == 123_456
+
+
+@pytest.mark.asyncio
+async def test_send_transaction_calls_before_send_before_broadcast(monkeypatch):
+    sender = _make_sender(TransactionConfig(local_gas_estimation=True))
+    function_call = SimpleNamespace(
+        build_transaction=AsyncMock(
+            return_value={"from": sender.user_address, "gasPrice": 11, "value": 0}
+        )
+    )
+    events = []
+
+    async def before_send(txhash):
+        events.append(("before_send", txhash))
+
+    async def send_raw_transaction(raw_transaction):
+        events.append(("send_raw_transaction", raw_transaction))
+        return _TxHash("0xabc")
+
+    sender.w3.eth.send_raw_transaction = AsyncMock(side_effect=send_raw_transaction)
+
+    monkeypatch.setattr(
+        "kuru_sdk_py.transaction.transaction.NonceManager.get_and_increment_nonce",
+        AsyncMock(return_value=5),
+    )
+    monkeypatch.setattr(
+        "kuru_sdk_py.transaction.transaction.NonceManager.mark_transaction_failed",
+        AsyncMock(),
+    )
+
+    await AsyncTransactionSenderMixin._send_transaction(
+        sender,
+        function_call,
+        gas_price=11,
+        before_send=before_send,
+    )
+
+    assert events == [
+        ("before_send", "0xabc"),
+        ("send_raw_transaction", b"signed"),
+    ]

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from loguru import logger
-from typing import Protocol, runtime_checkable, Optional
+from typing import Awaitable, Callable, Protocol, runtime_checkable, Optional
 from web3 import AsyncWeb3
 from eth_account.signers.local import LocalAccount
 import asyncio
@@ -62,6 +62,7 @@ class AsyncTransactionSenderMixin:
         access_list: Optional[list[dict]] = None,
         gas_price: Optional[int] = None,
         local_gas_counts: Optional[LocalGasCounts] = None,
+        before_send: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
         """Build, sign, and send a transaction to the blockchain.
 
@@ -168,10 +169,18 @@ class AsyncTransactionSenderMixin:
 
             # Sign transaction
             signed_tx = self.account.sign_transaction(tx)
+            tx_hash_hex = signed_tx.hash.hex()
+
+            if before_send is not None:
+                await before_send(tx_hash_hex)
 
             # Send transaction
             tx_hash = await self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-            tx_hash_hex = tx_hash.hex()
+            sent_tx_hash_hex = tx_hash.hex()
+            if sent_tx_hash_hex != tx_hash_hex:
+                logger.warning(
+                    f"Signed tx hash {tx_hash_hex} differs from RPC tx hash {sent_tx_hash_hex}"
+                )
 
             logger.info(f"Transaction sent: {tx_hash_hex}")
             return tx_hash_hex

@@ -5,7 +5,7 @@ from web3 import AsyncWeb3, AsyncHTTPProvider
 from web3.contract import AsyncContract
 from web3 import Web3
 
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from kuru_sdk_py.configs import (
     MarketConfig,
@@ -194,7 +194,12 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
 
     # _send_transaction is inherited from AsyncTransactionSenderMixin
 
-    async def place_batch(self, request: BatchOrderRequest, gas_price: Optional[int] = None) -> str:
+    async def place_batch(
+        self,
+        request: BatchOrderRequest,
+        gas_price: Optional[int] = None,
+        before_send: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> str:
         """Place a batch order from a structured batch request."""
         return await self.place_order(
             buy_cloids=request.buy_cloids,
@@ -209,6 +214,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
             post_only=request.post_only,
             price_rounding=request.price_rounding,
             gas_price=gas_price,
+            before_send=before_send,
         )
 
     async def place_order(
@@ -225,6 +231,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
         post_only: bool,
         price_rounding: Optional[str] = "default",
         gas_price: Optional[int] = None,
+        before_send: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
         """
         Deprecated: use place_batch(BatchOrderRequest) for new code.
@@ -383,6 +390,7 @@ class OrdersExecutor(AsyncTransactionSenderMixin):
                 n_sell=len(sell_prices),
                 n_cancel=len(order_ids_to_cancel),
             ),
+            before_send=before_send,
         )
 
         return txhash

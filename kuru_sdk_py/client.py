@@ -500,23 +500,34 @@ class KuruClient:
             order.update_status(OrderStatus.ORDER_SENT)
             self.orders_manager.cloid_to_order[order.cloid] = order
 
-        txhash = await self.executor.place_batch(request, gas_price=gas_price)
-
         all_orders = orders_to_register + request.cancel_orders
-
-        # Set txhash on all orders and register txhash mapping
-        for order in all_orders:
-            order.set_txhash(txhash)
-
-        # Register sent orders by txhash
-        self.orders_manager.txhash_to_sent_orders[txhash] = SentOrders(
+        sent_orders = SentOrders(
             buy_orders=request.buy_orders,
             sell_orders=request.sell_orders,
             cancel_orders=request.cancel_orders,
         )
+        registered_txhash: str | None = None
 
-        # Add to pending transactions cache
-        await self.orders_manager.pending_transactions.set(txhash, txhash)
+        async def register_before_send(txhash: str) -> None:
+            nonlocal registered_txhash
+            registered_txhash = txhash
+            for order in all_orders:
+                order.set_txhash(txhash)
+            self.orders_manager.txhash_to_sent_orders[txhash] = sent_orders
+            await self.orders_manager.pending_transactions.set(txhash, txhash)
+
+        try:
+            txhash = await self.executor.place_batch(
+                request,
+                gas_price=gas_price,
+                before_send=register_before_send,
+            )
+        except Exception:
+            if registered_txhash is not None:
+                self.orders_manager.txhash_to_sent_orders.pop(registered_txhash, None)
+                self.orders_manager.txhash_to_orders_created.pop(registered_txhash, None)
+                await self.orders_manager.pending_transactions.delete(registered_txhash)
+            raise
 
         return txhash
 
