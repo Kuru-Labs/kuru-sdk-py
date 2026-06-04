@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 
 [[package]]
@@ -921,7 +921,7 @@ wheels = [
 
 [[package]]
 name = "kuru-sdk-py"
-version = "0.1.11"
+version = "0.1.13"
 source = { editable = "." }
 dependencies = [
     { name = "aiocache" },

@@ -113,13 +113,15 @@ class AsyncTransactionSenderMixin:
                     + (159_000 * local_gas_counts.n_buy)
                     + (160_000 * local_gas_counts.n_sell)
                     + (44_000 * local_gas_counts.n_cancel)
+                    + self.transaction_config.gas_buffer
                 )
                 logger.debug(
                     "Using local gas estimation formula: "
                     f"gas={tx['gas']} "
                     f"(buy={local_gas_counts.n_buy}, "
                     f"sell={local_gas_counts.n_sell}, "
-                    f"cancel={local_gas_counts.n_cancel})"
+                    f"cancel={local_gas_counts.n_cancel}, "
+                    f"buffer={self.transaction_config.gas_buffer})"
                 )
             else:
                 # Estimate gas

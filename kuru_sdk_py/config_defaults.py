@@ -155,7 +155,7 @@ When False:
 When True:
 - Uses a fixed local formula for batch order and cancel flows
 - Skips RPC gas estimation for those flows
-- Does not apply access-list slot subtraction or additional gas buffers
+- Adds transaction_config.gas_buffer on top of the formula result
 """
 
 # ============================================================================

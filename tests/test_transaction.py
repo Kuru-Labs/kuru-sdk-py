@@ -86,7 +86,7 @@ async def test_send_transaction_uses_local_formula_without_rpc_estimate(monkeypa
     )
     sender.w3.eth.estimate_gas.assert_not_awaited()
     signed_tx = sender.account.sign_transaction.call_args.args[0]
-    assert signed_tx["gas"] == 804_000
+    assert signed_tx["gas"] == 804_000 + 888_888
     fail_mock.assert_not_awaited()
 
 
